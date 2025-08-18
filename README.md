@@ -2,13 +2,11 @@
 
 MeowField_AutoPiano 是一款面向 PC 游戏的自动弹琴软件，集成音频→MIDI 转换（PianoTrans）、MIDI→LRCp 转换、LRCp/MIDI 双模式自动演奏、3×7（21 键）映射、播放列表自动连播与可视化日志。
 
-![image-20250819031823529](C:\Users\薮猫\AppData\Roaming\Typora\typora-user-images\image-20250819031823529.png)
+
 
 ## 功能特性
 - 图形界面（Tkinter）：左侧文件/列表/控制区，右侧实时日志；布局随窗口大小自适应
 - 音频→MIDI：集成调用 `PianoTrans`，本地AI自动将常见音频格式文件转为MIDI谱
-
-![image-20250819032159488](C:\Users\薮猫\AppData\Roaming\Typora\typora-user-images\image-20250819032159488.png)
 
 - MIDI→LRCp：生成时间轴格式 `[start][end] TOKENS`，支持和弦/延长音，并自动加入“自动演奏列表”
 - 双演奏模式：
