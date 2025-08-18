@@ -2,17 +2,20 @@
 
 MeowField_AutoPiano 是一款面向 PC 游戏的自动弹琴软件，集成音频→MIDI 转换（PianoTrans）、MIDI→LRCp 转换、LRCp/MIDI 双模式自动演奏、3×7（21 键）映射、播放列表自动连播与可视化日志。
 
+![image-20250819031823529](C:\Users\薮猫\AppData\Roaming\Typora\typora-user-images\image-20250819031823529.png)
+
 ## 功能特性
 - 图形界面（Tkinter）：左侧文件/列表/控制区，右侧实时日志；布局随窗口大小自适应
-- 音频→MIDI：调用 `PianoTrans-v1.0/PianoTrans.exe`，自动解析实际输出路径（无需 `-o`）
+- 音频→MIDI：集成调用 `PianoTrans`，本地AI自动将常见音频格式文件转为MIDI谱
+
+![image-20250819032159488](C:\Users\薮猫\AppData\Roaming\Typora\typora-user-images\image-20250819032159488.png)
+
 - MIDI→LRCp：生成时间轴格式 `[start][end] TOKENS`，支持和弦/延长音，并自动加入“自动演奏列表”
 - 双演奏模式：
   - `lrcp`（时间轴精准演奏）
-  - `midi`（3×7 映射直演；参考 QiuMusicPro 的黑键归并逻辑 `qmp`）
-- 3×7（21键）映射：L/M/H × 1..7；仅用于 MIDI 直演，LRCp 不限制
+  - `midi`（映射直演，支持和弦）
 - 自动连播：双击列表播放；一首结束自动跳到下一首
-- 管理员键位模拟：更易被游戏前台识别
-- 日志与导出：`logs/` 中保存操作日志，便于排错
+- 支持自行选择MIDI文件演奏
 
 ## 目录结构（关键）
 - `auto_piano_py312.py` / `auto_piano_py312.pyw`：主程序
@@ -31,14 +34,14 @@ MeowField_AutoPiano 是一款面向 PC 游戏的自动弹琴软件，集成音�
 - 首次安装依赖需联网（或使用已打包的 `.venv`）
 
 ## 安装与运行
-1) 复制项目到目标电脑（例如 `D:\AutoPiano`），保持目录结构不变。
-2) 安装依赖（推荐虚拟环境）：
+1) 下载本项目到目标电脑（例如 `D:\AutoPiano`），保持目录结构不变。下载地址： **https://pan.baidu.com/s/16jUGmw--O3PCEfMBdk5OEA?pwd=rz74**  提取码: rz74 
+2) 安装依赖：
 ```powershell
 cd D:\AutoPiano
 
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
-3) 启动（必须管理员）：
+3) 启动：
 - 双击start_admin.bat
 
 
@@ -78,7 +81,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
   - 将演奏模式设为 `midi`、映射策略设为 `qmp`；该模式使用绝对时间调度
 
 ## 提交问题
-- 提交issue请附：复现步骤、问题出现的时间点（分:秒）、相关文件路径、`logs` 中对应时间段日志。
+- 提交issue请附：复现步骤、问题出现的时间点、相关文件路径、`logs` 中对应时间段日志。
 - 也可以加入反馈交流群：47814322（QQ）
 
 # 致谢
