@@ -1,0 +1,2 @@
+# MeowField_AutoPiano
+自动弹琴软件，可自动转换音频文件为MIDI谱，适配开发空间PC端乐器自动演奏
