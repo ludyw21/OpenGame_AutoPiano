@@ -153,9 +153,10 @@
         "font_size": 10,
         "theme_name": "superhero",
         "theme_mode": "dark",
-        "density": "comfortable",
+        "density": "compact",
         "scaling": "auto",
-        "sashpos": 739,
-        "sash_ratio": 0.5355
+        "sashpos": 629,
+        "sash_ratio": 0.4558,
+        "sidebar_stub": true
     }
 }

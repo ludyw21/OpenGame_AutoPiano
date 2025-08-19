@@ -13,6 +13,15 @@ try:
     import ttkbootstrap as tb  # 可选主题库
 except Exception:
     tb = None
+# Toast 与 ToolTip（可选）
+try:
+    from ttkbootstrap.toast import ToastNotification
+except Exception:
+    ToastNotification = None
+try:
+    from ttkbootstrap.tooltip import ToolTip
+except Exception:
+    ToolTip = None
 import threading
 import time
 import os
@@ -40,6 +49,16 @@ try:
     from meowauto.widgets.table import style_table as _tbl_style, apply_striped as _tbl_striped, bind_hover_highlight as _tbl_hover
 except Exception:
     _tbl_style = _tbl_striped = _tbl_hover = None
+# 新增：外观管理器
+try:
+    from meowauto.ui.appearance import AppearanceManager as _AppearanceManager
+except Exception:
+    _AppearanceManager = None
+# 新增：播放列表视图
+try:
+    from meowauto.ui.playlist import PlaylistView as _PlaylistView
+except Exception:
+    _PlaylistView = None
 
 # 导入音频转换模块
 try:
@@ -204,7 +223,11 @@ class Py312AutoPiano:
         
         # 外观初始化（主题/缩放/密度）
         try:
-            self._init_appearance()
+            if _AppearanceManager is not None:
+                self._appearance = _AppearanceManager(self, self.config, self.log)
+                self._appearance.init()
+            else:
+                self._init_appearance()
         except Exception as _e:
             # 外观失败不影响功能
             pass
@@ -271,7 +294,8 @@ class Py312AutoPiano:
                     "theme_name": "flatly",
                     "theme_mode": "light",
                     "density": "comfortable",
-                    "scaling": "auto"
+                    "scaling": "auto",
+                    "sidebar_stub": True
                 }
                 if "ui" not in cfg or not isinstance(cfg.get("ui"), dict):
                     cfg["ui"] = ui_default
@@ -298,7 +322,8 @@ class Py312AutoPiano:
                         "theme_name": "flatly",
                         "theme_mode": "light",
                         "density": "comfortable",
-                        "scaling": "auto"
+                        "scaling": "auto",
+                        "sidebar_stub": True
                     }
                 }
                 with open("config.json", "w", encoding="utf-8") as f:
@@ -400,6 +425,13 @@ class Py312AutoPiano:
         title_label = ttk.Label(main_frame, text="🎹 MeowField_AutoPiano", font=title_font)
         title_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 10))
         
+        # 预留侧边栏占位（不影响布局）
+        try:
+            if self.config.get("ui", {}).get("sidebar_stub", True):
+                self._init_docked_sidebar_stub()
+        except Exception:
+            pass
+        
         # 新增：外观工具条（主题/模式/密度）
         appearance_bar = ttk.Frame(main_frame)
         appearance_bar.grid(row=0, column=2, sticky=tk.E, pady=(0,10))
@@ -413,10 +445,19 @@ class Py312AutoPiano:
         theme_combo.pack(side=tk.LEFT, padx=(4,8))
         def _on_theme_change(_e=None):
             try:
-                self._apply_theme(self.theme_var.get())
+                if hasattr(self, "_appearance") and self._appearance:
+                    self._appearance.apply_theme(self.theme_var.get())
+                    self._appearance.apply_to_widgets()
+                else:
+                    self._apply_theme(self.theme_var.get())
             except Exception as e:
                 self.log(f"主题切换失败: {e}", "WARNING")
         theme_combo.bind('<<ComboboxSelected>>', _on_theme_change)
+        try:
+            if ToolTip is not None:
+                ToolTip(theme_combo, text="切换主题（与下方模式配合）")
+        except Exception:
+            pass
         # 模式选择
         self.theme_mode_var = tk.StringVar(value=self.config.get("ui", {}).get("theme_mode", "light"))
         ttk.Label(appearance_bar, text="模式:").pack(side=tk.LEFT)
@@ -428,23 +469,32 @@ class Py312AutoPiano:
                 mode = self.theme_mode_var.get()
                 cur = self.theme_var.get()
                 mapping = {
-                    "flatly": ("flatly", "darkly"),
-                    "litera": ("litera", "superhero"),
-                    "cosmo": ("cosmo", "cyborg"),
-                    "sandstone": ("sandstone", "solar"),
-                    "darkly": ("flatly", "darkly"),
-                    "superhero": ("litera", "superhero"),
-                    "cyborg": ("cosmo", "cyborg"),
-                    "solar": ("sandstone", "solar")
+                "flatly": ("flatly", "darkly"),
+                "litera": ("litera", "superhero"),
+                "cosmo": ("cosmo", "cyborg"),
+                "sandstone": ("sandstone", "solar"),
+                "darkly": ("flatly", "darkly"),
+                "superhero": ("litera", "superhero"),
+                "cyborg": ("cosmo", "cyborg"),
+                "solar": ("sandstone", "solar")
                 }
                 light, dark = mapping.get(cur, ("flatly", "darkly"))
                 target = dark if mode == "dark" else light
                 self.theme_var.set(target)
-                self._apply_theme(target)
+                if hasattr(self, "_appearance") and self._appearance:
+                    self._appearance.apply_theme(target)
+                    self._appearance.apply_to_widgets()
+                else:
+                    self._apply_theme(target)
                 self.config.setdefault("ui", {})["theme_mode"] = mode
             except Exception as e:
                 self.log(f"模式切换失败: {e}", "WARNING")
         mode_combo.bind('<<ComboboxSelected>>', _on_mode_change)
+        try:
+            if ToolTip is not None:
+                ToolTip(mode_combo, text="切换浅色/深色模式")
+        except Exception:
+            pass
         # 密度选择
         self.density_var = tk.StringVar(value=self.config.get("ui", {}).get("density", "comfortable"))
         ttk.Label(appearance_bar, text="密度:").pack(side=tk.LEFT)
@@ -453,15 +503,34 @@ class Py312AutoPiano:
         density_combo.pack(side=tk.LEFT, padx=(4,0))
         def _on_density_change(_e=None):
             try:
-                self._apply_density(self.density_var.get())
+                if hasattr(self, "_appearance") and self._appearance:
+                    self._appearance.apply_density(self.density_var.get())
+                    self._appearance.apply_to_widgets()
+                else:
+                    self._apply_density(self.density_var.get())
             except Exception as e:
                 self.log(f"密度切换失败: {e}", "WARNING")
         density_combo.bind('<<ComboboxSelected>>', _on_density_change)
+        try:
+            if ToolTip is not None:
+                ToolTip(density_combo, text="切换控件密度（紧凑/舒适）")
+        except Exception:
+            pass
         
-        # 主内容采用左右分栏
-        content_paned = ttk.Panedwindow(main_frame, orient=tk.HORIZONTAL)
-        content_paned.grid(row=1, column=0, columnspan=3, sticky=(tk.N, tk.S, tk.E, tk.W))
+        # 页面容器与默认页（Meow）
+        self._page_container = ttk.Frame(main_frame)
+        self._page_container.grid(row=1, column=0, columnspan=3, sticky=(tk.N, tk.S, tk.E, tk.W))
         main_frame.rowconfigure(1, weight=1)
+        self._page_container.columnconfigure(0, weight=1)
+        self._page_container.rowconfigure(0, weight=1)
+        self._page_meow = ttk.Frame(self._page_container)
+        self._page_meow.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+        
+        # 主内容采用左右分栏（位于 Meow 页）
+        content_paned = ttk.Panedwindow(self._page_meow, orient=tk.HORIZONTAL)
+        content_paned.grid(row=0, column=0, columnspan=1, sticky=(tk.N, tk.S, tk.E, tk.W))
+        self._page_meow.rowconfigure(0, weight=1)
+        self._page_meow.columnconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
         left_frame = ttk.Frame(content_paned)
         right_frame = ttk.Frame(content_paned, width=420)
@@ -545,51 +614,49 @@ class Py312AutoPiano:
         score_info_label.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(5, 0))
         
         # 播放列表区域
-        playlist_frame = ttk.LabelFrame(left_frame, text="自动演奏列表", padding="12")
-        playlist_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        playlist_frame.columnconfigure(0, weight=1)
-        # 精简工具栏
-        playlist_toolbar = ttk.Frame(playlist_frame)
-        playlist_toolbar.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(playlist_toolbar, text="添加乐谱", command=self.add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(playlist_toolbar, text="移除选中", command=self.remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(playlist_toolbar, text="清空列表", command=self.clear_playlist).pack(side=tk.LEFT, padx=(0, 5))
-        
-        playlist_display_frame = ttk.Frame(playlist_frame)
-        playlist_display_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # 创建播放列表表格
-        columns = ('序号', '文件名', '类型', '时长', '状态')
-        self.playlist_tree = ttk.Treeview(playlist_display_frame, columns=columns, show='headings', height=6)
-        
-        # 设置列标题
-        for col in columns:
-            self.playlist_tree.heading(col, text=col)
-            self.playlist_tree.column(col, width=100)
-        
-        # 添加滚动条
-        playlist_scrollbar = ttk.Scrollbar(playlist_display_frame, orient=tk.VERTICAL, command=self.playlist_tree.yview)
-        self.playlist_tree.configure(yscrollcommand=playlist_scrollbar.set)
-        
-        self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        playlist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # 应用表格样式与交互
-        try:
-            if _tbl_style:
-                density = self.config.get('ui', {}).get('density', 'comfortable')
-                sty = getattr(self, '_style', ttk.Style())
-                _tbl_style(sty, density)
-            if _tbl_hover:
-                _tbl_hover(self.playlist_tree)
-        except Exception:
-            pass
-        
-        # 绑定双击事件
-        self.playlist_tree.bind('<Double-1>', self.on_playlist_double_click)
-        
-        # 播放列表控制
-        #（已移除与自动演奏无关的播放控制按钮）
+        if _PlaylistView is not None:
+            density = self.config.get('ui', {}).get('density', 'comfortable')
+            sty = getattr(self, '_style', ttk.Style())
+            self._playlist_view = _PlaylistView(left_frame, style=sty, density=density)
+            # 工具栏（沿用原有三个按钮），添加到内部 toolbar
+            toolbar = self._playlist_view.toolbar
+            ttk.Button(toolbar, text="添加乐谱", command=self.add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(toolbar, text="移除选中", command=self.remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(toolbar, text="清空列表", command=self.clear_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            # 指向新 tree
+            self.playlist_tree = self._playlist_view.tree
+            # 绑定双击事件
+            self.playlist_tree.bind('<Double-1>', self.on_playlist_double_click)
+        else:
+            playlist_frame = ttk.LabelFrame(left_frame, text="自动演奏列表", padding="12")
+            playlist_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+            playlist_frame.columnconfigure(0, weight=1)
+            playlist_toolbar = ttk.Frame(playlist_frame)
+            playlist_toolbar.pack(fill=tk.X, pady=(0, 5))
+            ttk.Button(playlist_toolbar, text="添加乐谱", command=self.add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(playlist_toolbar, text="移除选中", command=self.remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(playlist_toolbar, text="清空列表", command=self.clear_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            playlist_display_frame = ttk.Frame(playlist_frame)
+            playlist_display_frame.pack(fill=tk.BOTH, expand=True)
+            columns = ('序号', '文件名', '类型', '时长', '状态')
+            self.playlist_tree = ttk.Treeview(playlist_display_frame, columns=columns, show='headings', height=6)
+            for col in columns:
+                self.playlist_tree.heading(col, text=col)
+                self.playlist_tree.column(col, width=100)
+            playlist_scrollbar = ttk.Scrollbar(playlist_display_frame, orient=tk.VERTICAL, command=self.playlist_tree.yview)
+            self.playlist_tree.configure(yscrollcommand=playlist_scrollbar.set)
+            self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            playlist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            try:
+                if _tbl_style:
+                    density = self.config.get('ui', {}).get('density', 'comfortable')
+                    sty = getattr(self, '_style', ttk.Style())
+                    _tbl_style(sty, density)
+                if _tbl_hover:
+                    _tbl_hover(self.playlist_tree)
+            except Exception:
+                pass
+            self.playlist_tree.bind('<Double-1>', self.on_playlist_double_click)
         
         # 播放控制区域
         control_frame = ttk.LabelFrame(left_frame, text="播放控制", padding="12")
@@ -648,7 +715,13 @@ class Py312AutoPiano:
         progress_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(20, 0))
         
         self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+        try:
+            if tb is not None:
+                self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100, bootstyle="success-striped")
+            else:
+                self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+        except Exception:
+            self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
         self.progress_bar.pack(fill=tk.X, pady=(0, 5))
         
         # 时间显示
@@ -698,6 +771,24 @@ class Py312AutoPiano:
             self.root.bind_all('<Control-s>', lambda e: self.save_log())
         except Exception:
             pass
+        
+        # 追加其它页面：圆神 / 待开发（默认隐藏）
+        try:
+            self._page_ys = ttk.Frame(self._page_container)
+            from meowauto.ui.yuanshen import YuanShenPage
+            ys = YuanShenPage(self._page_ys)
+            ys.frame.pack(fill=tk.BOTH, expand=True)
+            self._page_ys.grid_remove()
+        except Exception:
+            self._page_ys = ttk.Frame(self._page_container)
+            ttk.Label(self._page_ys, text="圆神 · 空白页").pack(pady=8)
+            self._page_ys.grid_remove()
+        self._page_tbd = ttk.Frame(self._page_container)
+        ttk.Label(self._page_tbd, text="待开发 · TODO").pack(pady=8)
+        self._page_tbd.grid_remove()
+        
+        # 默认显示 Meow 页
+        self._switch_page('meow')
     
     def create_key_mapping_table(self, parent):
         """创建键位映射表格"""
@@ -1764,6 +1855,13 @@ class Py312AutoPiano:
         except:
             pass
         
+        # 销毁侧边栏窗口
+        try:
+            if hasattr(self, '_sidebar_win') and self._sidebar_win:
+                self._sidebar_win.destroy()
+        except Exception:
+            pass
+        
         self.root.destroy()
     
     def run(self):
@@ -2692,12 +2790,110 @@ class Py312AutoPiano:
     def _apply_appearance_to_widgets(self):
         """根据主题模式微调个别区域（如日志区）。"""
         try:
+            if hasattr(self, "_log_view") and self._log_view:
+                self._log_view.apply_theme()
             mode = self.config.get("ui", {}).get("theme_mode", "light")
             if hasattr(self, "log_text") and self.log_text:
                 if mode == "dark":
                     self.log_text.configure(bg="#22262A", fg="#D6DEE7", insertbackground="#D6DEE7")
                 else:
                     self.log_text.configure(bg="#FFFFFF", fg="#1F2D3D", insertbackground="#1F2D3D")
+        except Exception:
+            pass
+
+    def toast(self, message: str, title: str = "提示", duration: int = 3000):
+        """显示轻通知（若可用）。"""
+        try:
+            if ToastNotification is None or tb is None:
+                return
+            ToastNotification(title=title, message=message, duration=duration, alert=False).show_toast()
+        except Exception:
+            pass
+
+    def _init_docked_sidebar_stub(self):
+        """创建停靠在窗口外侧的侧边栏占位（独立窗口，不影响主界面布局）。"""
+        try:
+            # 创建无边框子窗口
+            self._sidebar_win = tk.Toplevel(self.root)
+            self._sidebar_win.overrideredirect(True)
+            try:
+                self._sidebar_win.wm_attributes('-toolwindow', True)
+            except Exception:
+                pass
+            # 初始为折叠
+            self._sidebar_collapsed = True
+            self._sidebar_collapsed_w = 12
+            self._sidebar_expanded_w = 260
+            self._sidebar_container = ttk.Frame(self._sidebar_win, padding=2)
+            self._sidebar_container.pack(fill=tk.BOTH, expand=True)
+            # 顶部折叠把手
+            topbar = ttk.Frame(self._sidebar_container)
+            topbar.pack(fill=tk.X)
+            self._sidebar_toggle = ttk.Button(
+                topbar, text='≡', width=2, command=lambda: self._toggle_sidebar_stub())
+            self._sidebar_toggle.pack(side=tk.LEFT, pady=4)
+            ttk.Label(topbar, text="Sidebar").pack(side=tk.LEFT, padx=6)
+            ttk.Separator(self._sidebar_container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(2,6))
+            # Notebook 页签
+            nb = ttk.Notebook(self._sidebar_container)
+            nb.pack(fill=tk.BOTH, expand=True)
+            # Page 1: Meow（按钮直达页面）
+            pg_meow = ttk.Frame(nb, padding=6)
+            nb.add(pg_meow, text="Meow")
+            ttk.Button(pg_meow, text="Meow 页面", command=lambda: self._switch_page('meow')).pack(fill=tk.X, pady=2)
+            ttk.Separator(pg_meow, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+            ttk.Label(pg_meow, text="当前页面入口", foreground="#888").pack(anchor=tk.W)
+            # Page 2: 圆神
+            pg_ys = ttk.Frame(nb, padding=6)
+            nb.add(pg_ys, text="圆神")
+            ttk.Button(pg_ys, text="打开圆神", command=lambda: self._switch_page('yuanshen')).pack(fill=tk.X, pady=2)
+            # Page 3: 待开发
+            pg_tbd = ttk.Frame(nb, padding=6)
+            nb.add(pg_tbd, text="待开发")
+            ttk.Button(pg_tbd, text="打开待开发", command=lambda: self._switch_page('tbd')).pack(fill=tk.X, pady=2)
+            # 跟随主窗体定位
+            def _follow(_e=None):
+                try:
+                    rx = self.root.winfo_rootx()
+                    ry = self.root.winfo_rooty()
+                    rh = self.root.winfo_height()
+                    w = self._sidebar_collapsed_w if self._sidebar_collapsed else self._sidebar_expanded_w
+                    x = max(0, rx - w)
+                    self._sidebar_win.geometry(f"{w}x{rh}+{x}+{ry}")
+                    self._sidebar_win.lift()
+                except Exception:
+                    pass
+            self.root.bind('<Configure>', _follow)
+            self.root.after(0, _follow)
+        except Exception:
+            pass
+
+    def _toggle_sidebar_stub(self):
+        self._sidebar_collapsed = not getattr(self, '_sidebar_collapsed', True)
+        try:
+            # 重新定位以应用宽度变化
+            rx = self.root.winfo_rootx()
+            ry = self.root.winfo_rooty()
+            rh = self.root.winfo_height()
+            w = self._sidebar_collapsed_w if self._sidebar_collapsed else self._sidebar_expanded_w
+            x = max(0, rx - w)
+            self._sidebar_win.geometry(f"{w}x{rh}+{x}+{ry}")
+            self._sidebar_win.lift()
+        except Exception:
+            pass
+
+    def _switch_page(self, key: str):
+        """切换页面：'meow' | 'yuanshen' | 'tbd'"""
+        try:
+            for f in (getattr(self, '_page_meow', None), getattr(self, '_page_ys', None), getattr(self, '_page_tbd', None)):
+                if f:
+                    f.grid_remove()
+            if key == 'yuanshen' and getattr(self, '_page_ys', None):
+                self._page_ys.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+            elif key == 'tbd' and getattr(self, '_page_tbd', None):
+                self._page_tbd.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+            else:
+                self._page_meow.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
         except Exception:
             pass
 
