@@ -30,6 +30,11 @@ import re
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 import ctypes
+# 新增：模块化日志视图
+try:
+    from meowauto.ui.logview import LogView
+except Exception:
+    LogView = None
 
 # 导入音频转换模块
 try:
