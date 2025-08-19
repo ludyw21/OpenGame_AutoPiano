@@ -383,7 +383,11 @@ class Py312AutoPiano:
         main_frame.columnconfigure(2, weight=0)
         
         # 标题
-        title_label = ttk.Label(main_frame, text="🎹 MeowField_AutoPiano", font=("Microsoft YaHei", 18, "bold"))
+        try:
+            title_font = tkfont.nametofont("TkHeadingFont")
+        except Exception:
+            title_font = ("Microsoft YaHei", 18, "bold")
+        title_label = ttk.Label(main_frame, text="🎹 MeowField_AutoPiano", font=title_font)
         title_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 10))
         
         # 新增：外观工具条（主题/模式/密度）
@@ -461,7 +465,7 @@ class Py312AutoPiano:
         left_frame.columnconfigure(0, weight=1)
         
         # 文件选择区域
-        file_frame = ttk.LabelFrame(left_frame, text="文件选择", padding="10")
+        file_frame = ttk.LabelFrame(left_frame, text="文件选择", padding="12")
         file_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         left_frame.columnconfigure(0, weight=1)
         
@@ -481,7 +485,7 @@ class Py312AutoPiano:
         ttk.Button(convert_frame, text="加载乐谱文件", command=self.load_score_file, style=self.secondary_button_style).pack(side=tk.LEFT, padx=(0, 10))
         
         # MIDI文件信息
-        midi_frame = ttk.LabelFrame(left_frame, text="文件信息", padding="10")
+        midi_frame = ttk.LabelFrame(left_frame, text="文件信息", padding="12")
         midi_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         ttk.Label(midi_frame, text="MIDI文件:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
@@ -500,7 +504,7 @@ class Py312AutoPiano:
         score_info_label.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(5, 0))
         
         # 播放列表区域
-        playlist_frame = ttk.LabelFrame(left_frame, text="自动演奏列表", padding="10")
+        playlist_frame = ttk.LabelFrame(left_frame, text="自动演奏列表", padding="12")
         playlist_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         playlist_frame.columnconfigure(0, weight=1)
         # 精简工具栏
@@ -536,7 +540,7 @@ class Py312AutoPiano:
         #（已移除与自动演奏无关的播放控制按钮）
         
         # 播放控制区域
-        control_frame = ttk.LabelFrame(left_frame, text="播放控制", padding="10")
+        control_frame = ttk.LabelFrame(left_frame, text="播放控制", padding="12")
         control_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 播放控制按钮
@@ -601,14 +605,14 @@ class Py312AutoPiano:
         time_label.pack()
         
         # 键位映射显示
-        mapping_frame = ttk.LabelFrame(left_frame, text="键位映射", padding="10")
+        mapping_frame = ttk.LabelFrame(left_frame, text="键位映射", padding="12")
         mapping_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 创建键位映射表格
         self.create_key_mapping_table(mapping_frame)
         
         # 日志区域
-        log_frame = ttk.LabelFrame(right_frame, text="操作日志", padding="10")
+        log_frame = ttk.LabelFrame(right_frame, text="操作日志", padding="12")
         log_frame.pack(fill=tk.BOTH, expand=True)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
@@ -623,6 +627,11 @@ class Py312AutoPiano:
         
         self.log_text = scrolledtext.ScrolledText(log_frame, height=16, width=100)
         self.log_text.pack(fill=tk.BOTH, expand=True)
+        # 创建后首次应用外观同步
+        try:
+            self._apply_appearance_to_widgets()
+        except Exception:
+            pass
         
         # 状态栏
         self.status_var = tk.StringVar(value="就绪")
@@ -2504,6 +2513,12 @@ class Py312AutoPiano:
             # 预设按钮风格名
             self.accent_button_style = "Accent.TButton" if tb else "TButton"
             self.secondary_button_style = "Secondary.TButton" if tb else "TButton"
+            # 记录当前主题来源
+            try:
+                src = "ttkbootstrap" if tb else "system ttk"
+                self.log(f"外观初始化完成（{src}）", "INFO")
+            except Exception:
+                pass
         except Exception:
             self._style = ttk.Style()
             self.accent_button_style = "TButton"
@@ -2572,6 +2587,8 @@ class Py312AutoPiano:
             dark_set = {"darkly", "superhero", "cyborg", "solar"}
             self.config["ui"]["theme_mode"] = "dark" if theme_name in dark_set else "light"
             self.log(f"主题已切换为: {theme_name}", "INFO")
+            # 主题改变后同步更新控件外观
+            self._apply_appearance_to_widgets()
         except Exception as e:
             self.log(f"切换主题失败: {e}", "WARNING")
 
@@ -2593,6 +2610,20 @@ class Py312AutoPiano:
         except Exception:
             pass
         self.config.setdefault("ui", {})["density"] = density
+        # 密度改变后可按需更新
+        self._apply_appearance_to_widgets()
+
+    def _apply_appearance_to_widgets(self):
+        """根据主题模式微调个别区域（如日志区）。"""
+        try:
+            mode = self.config.get("ui", {}).get("theme_mode", "light")
+            if hasattr(self, "log_text") and self.log_text:
+                if mode == "dark":
+                    self.log_text.configure(bg="#22262A", fg="#D6DEE7", insertbackground="#D6DEE7")
+                else:
+                    self.log_text.configure(bg="#FFFFFF", fg="#1F2D3D", insertbackground="#1F2D3D")
+        except Exception:
+            pass
 
 def main():
     """主函数"""
