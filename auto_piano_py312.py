@@ -7,6 +7,12 @@ MeowField_AutoPiano
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+# 新增：字体与主题库（安全导入）
+from tkinter import font as tkfont
+try:
+    import ttkbootstrap as tb  # 可选主题库
+except Exception:
+    tb = None
 import threading
 import time
 import os
@@ -23,6 +29,7 @@ from datetime import datetime
 import re
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
+import ctypes
 
 # 导入音频转换模块
 try:
@@ -181,6 +188,17 @@ class Py312AutoPiano:
         # 初始化配置
         self.config = self.load_config()
         
+        # 先设定按钮风格默认值，防止外观初始化失败导致属性缺失
+        self.accent_button_style = "TButton"
+        self.secondary_button_style = "TButton"
+        
+        # 外观初始化（主题/缩放/密度）
+        try:
+            self._init_appearance()
+        except Exception as _e:
+            # 外观失败不影响功能
+            pass
+        
         # 设置图标和样式
         self.setup_ui()
         
@@ -237,7 +255,20 @@ class Py312AutoPiano:
         try:
             if os.path.exists("config.json"):
                 with open("config.json", "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    cfg = json.load(f)
+                # 兼容注入 UI 默认项
+                ui_default = {
+                    "theme_name": "flatly",
+                    "theme_mode": "light",
+                    "density": "comfortable",
+                    "scaling": "auto"
+                }
+                if "ui" not in cfg or not isinstance(cfg.get("ui"), dict):
+                    cfg["ui"] = ui_default
+                else:
+                    for k, v in ui_default.items():
+                        cfg["ui"].setdefault(k, v)
+                return cfg
             else:
                 # 创建默认配置
                 default_config = {
@@ -252,6 +283,12 @@ class Py312AutoPiano:
                         "note_duration_multiplier": 1.0,
                         "enable_logging": True,
                         "default_volume": 0.7
+                    },
+                    "ui": {
+                        "theme_name": "flatly",
+                        "theme_mode": "light",
+                        "density": "comfortable",
+                        "scaling": "auto"
                     }
                 }
                 with open("config.json", "w", encoding="utf-8") as f:
@@ -342,13 +379,74 @@ class Py312AutoPiano:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
+        # 新增：右侧工具列
+        main_frame.columnconfigure(2, weight=0)
         
         # 标题
         title_label = ttk.Label(main_frame, text="🎹 MeowField_AutoPiano", font=("Microsoft YaHei", 18, "bold"))
         title_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 10))
+        
+        # 新增：外观工具条（主题/模式/密度）
+        appearance_bar = ttk.Frame(main_frame)
+        appearance_bar.grid(row=0, column=2, sticky=tk.E, pady=(0,10))
+        # 主题选择
+        self.theme_var = tk.StringVar(value=self.config.get("ui", {}).get("theme_name", "flatly"))
+        themes_light = ["flatly", "litera", "cosmo", "sandstone"]
+        themes_dark = ["darkly", "superhero", "cyborg", "solar"]
+        ttk.Label(appearance_bar, text="主题:").pack(side=tk.LEFT)
+        theme_combo = ttk.Combobox(appearance_bar, width=12, state="readonly", textvariable=self.theme_var,
+                                   values=themes_light + themes_dark)
+        theme_combo.pack(side=tk.LEFT, padx=(4,8))
+        def _on_theme_change(_e=None):
+            try:
+                self._apply_theme(self.theme_var.get())
+            except Exception as e:
+                self.log(f"主题切换失败: {e}", "WARNING")
+        theme_combo.bind('<<ComboboxSelected>>', _on_theme_change)
+        # 模式选择
+        self.theme_mode_var = tk.StringVar(value=self.config.get("ui", {}).get("theme_mode", "light"))
+        ttk.Label(appearance_bar, text="模式:").pack(side=tk.LEFT)
+        mode_combo = ttk.Combobox(appearance_bar, width=7, state="readonly", textvariable=self.theme_mode_var,
+                                  values=["light", "dark"])
+        mode_combo.pack(side=tk.LEFT, padx=(4,8))
+        def _on_mode_change(_e=None):
+            try:
+                mode = self.theme_mode_var.get()
+                cur = self.theme_var.get()
+                mapping = {
+                    "flatly": ("flatly", "darkly"),
+                    "litera": ("litera", "superhero"),
+                    "cosmo": ("cosmo", "cyborg"),
+                    "sandstone": ("sandstone", "solar"),
+                    "darkly": ("flatly", "darkly"),
+                    "superhero": ("litera", "superhero"),
+                    "cyborg": ("cosmo", "cyborg"),
+                    "solar": ("sandstone", "solar")
+                }
+                light, dark = mapping.get(cur, ("flatly", "darkly"))
+                target = dark if mode == "dark" else light
+                self.theme_var.set(target)
+                self._apply_theme(target)
+                self.config.setdefault("ui", {})["theme_mode"] = mode
+            except Exception as e:
+                self.log(f"模式切换失败: {e}", "WARNING")
+        mode_combo.bind('<<ComboboxSelected>>', _on_mode_change)
+        # 密度选择
+        self.density_var = tk.StringVar(value=self.config.get("ui", {}).get("density", "comfortable"))
+        ttk.Label(appearance_bar, text="密度:").pack(side=tk.LEFT)
+        density_combo = ttk.Combobox(appearance_bar, width=10, state="readonly", textvariable=self.density_var,
+                                     values=["comfortable", "compact"])
+        density_combo.pack(side=tk.LEFT, padx=(4,0))
+        def _on_density_change(_e=None):
+            try:
+                self._apply_density(self.density_var.get())
+            except Exception as e:
+                self.log(f"密度切换失败: {e}", "WARNING")
+        density_combo.bind('<<ComboboxSelected>>', _on_density_change)
+        
         # 主内容采用左右分栏
         content_paned = ttk.Panedwindow(main_frame, orient=tk.HORIZONTAL)
-        content_paned.grid(row=1, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+        content_paned.grid(row=1, column=0, columnspan=3, sticky=(tk.N, tk.S, tk.E, tk.W))
         main_frame.rowconfigure(1, weight=1)
         main_frame.columnconfigure(0, weight=1)
         left_frame = ttk.Frame(content_paned)
@@ -378,9 +476,9 @@ class Py312AutoPiano:
         convert_frame = ttk.Frame(left_frame)
         convert_frame.grid(row=1, column=0, pady=(10, 0))
         
-        ttk.Button(convert_frame, text="音频转MIDI", command=self.convert_mp3_to_midi).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(convert_frame, text="选择MIDI文件", command=self.browse_midi).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(convert_frame, text="加载乐谱文件", command=self.load_score_file).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(convert_frame, text="音频转MIDI", command=self.convert_mp3_to_midi, style=self.accent_button_style).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(convert_frame, text="选择MIDI文件", command=self.browse_midi, style=self.secondary_button_style).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(convert_frame, text="加载乐谱文件", command=self.load_score_file, style=self.secondary_button_style).pack(side=tk.LEFT, padx=(0, 10))
         
         # MIDI文件信息
         midi_frame = ttk.LabelFrame(left_frame, text="文件信息", padding="10")
@@ -445,7 +543,7 @@ class Py312AutoPiano:
         button_frame = ttk.Frame(control_frame)
         button_frame.pack(side=tk.LEFT, fill=tk.Y)
         
-        self.auto_play_button = ttk.Button(button_frame, text="自动弹琴", command=self.toggle_auto_play)
+        self.auto_play_button = ttk.Button(button_frame, text="自动弹琴", command=self.toggle_auto_play, style=self.accent_button_style)
         self.auto_play_button.pack(pady=(0, 5))
         
         # 控制参数
@@ -519,9 +617,9 @@ class Py312AutoPiano:
         log_toolbar = ttk.Frame(log_frame)
         log_toolbar.pack(fill=tk.X, pady=(0, 5))
         
-        ttk.Button(log_toolbar, text="清空日志", command=self.clear_log).pack(side=tk.LEFT)
-        ttk.Button(log_toolbar, text="保存日志", command=self.save_log).pack(side=tk.LEFT, padx=(5, 0))
-        ttk.Button(log_toolbar, text="导出配置", command=self.export_config).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(log_toolbar, text="清空日志", command=self.clear_log, style=self.secondary_button_style).pack(side=tk.LEFT)
+        ttk.Button(log_toolbar, text="保存日志", command=self.save_log, style=self.secondary_button_style).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(log_toolbar, text="导出配置", command=self.export_config, style=self.secondary_button_style).pack(side=tk.LEFT, padx=(5, 0))
         
         self.log_text = scrolledtext.ScrolledText(log_frame, height=16, width=100)
         self.log_text.pack(fill=tk.BOTH, expand=True)
@@ -560,6 +658,15 @@ class Py312AutoPiano:
         emoji = level_emoji.get(level, "ℹ️")
         
         log_message = f"[{timestamp}] {emoji} {message}\n"
+        
+        # 安全回退：日志控件未创建时打印到控制台
+        if not hasattr(self, "log_text") or self.log_text is None:
+            try:
+                print(log_message.strip())
+            except Exception:
+                pass
+            return
+        
         self.log_text.insert(tk.END, log_message)
         self.log_text.see(tk.END)
         
@@ -2377,6 +2484,115 @@ class Py312AutoPiano:
                 else:
                     lines.append(f"[{start_str}][{end_str}] {payload}\n")
         return ''.join(lines)
+
+    def _init_appearance(self):
+        """初始化外观：DPI缩放、主题、密度与字体。失败时静默回退。"""
+        ui_cfg = self.config.get("ui", {})
+        # 1) 缩放
+        try:
+            self._apply_scaling(ui_cfg.get("scaling", "auto"))
+        except Exception:
+            pass
+        # 2) 主题
+        try:
+            if tb is not None:
+                # 初始化样式
+                theme = ui_cfg.get("theme_name", "flatly")
+                self._style = tb.Style(theme=theme)
+            else:
+                self._style = ttk.Style()
+            # 预设按钮风格名
+            self.accent_button_style = "Accent.TButton" if tb else "TButton"
+            self.secondary_button_style = "Secondary.TButton" if tb else "TButton"
+        except Exception:
+            self._style = ttk.Style()
+            self.accent_button_style = "TButton"
+            self.secondary_button_style = "TButton"
+        # 3) 密度
+        try:
+            self._apply_density(ui_cfg.get("density", "comfortable"))
+        except Exception:
+            pass
+        # 4) 字体（不改变字体族，仅按缩放微调大小）
+        try:
+            base = tkfont.nametofont("TkDefaultFont")
+            textf = tkfont.nametofont("TkTextFont")
+            headf = tkfont.nametofont("TkHeadingFont")
+            # 根据 tk scaling 估计字号（保持最小 9）
+            scale = float(self.root.tk.call('tk', 'scaling'))
+            def _adj(f, mul=1.0):
+                try:
+                    size = max(9, int(f.cget('size') * scale * mul))
+                    f.configure(size=size)
+                except Exception:
+                    pass
+            _adj(base, 1.0)
+            _adj(textf, 1.0)
+            _adj(headf, 1.1)
+        except Exception:
+            pass
+
+    def _apply_scaling(self, mode_or_factor):
+        """应用缩放：'auto' 或 数字比例。优先使用 Windows DPI API。"""
+        try:
+            if isinstance(mode_or_factor, (int, float)):
+                factor = float(mode_or_factor)
+            else:
+                # auto: 通过 DPI 推算
+                factor = 1.0
+                try:
+                    # Windows 10+: 使用 shcore 获取缩放
+                    shcore = ctypes.windll.shcore
+                    shcore.SetProcessDpiAwareness(2)  # Per-Monitor v2
+                    # 获取主屏缩放（96 为 100%）
+                    user32 = ctypes.windll.user32
+                    dc = user32.GetDC(0)
+                    LOGPIXELSX = 88
+                    dpi = ctypes.windll.gdi32.GetDeviceCaps(dc, LOGPIXELSX)
+                    factor = max(0.75, dpi / 96.0)
+                except Exception:
+                    # 回退：基于 Tk 测量
+                    px_per_inch = self.root.winfo_fpixels('1i')
+                    factor = max(0.75, float(px_per_inch) / 96.0)
+            # 应用到 Tk
+            self.root.tk.call('tk', 'scaling', factor)
+            self.scaling_factor = factor
+        except Exception:
+            # 即使失败也不抛出
+            self.scaling_factor = 1.0
+
+    def _apply_theme(self, theme_name: str):
+        """切换主题；无 ttkbootstrap 时仅记录配置。"""
+        try:
+            if tb is not None and hasattr(self, "_style"):
+                self._style.theme_use(theme_name)
+            # 更新配置
+            self.config.setdefault("ui", {})["theme_name"] = theme_name
+            # 同步 theme_mode（根据名称粗略判断）
+            dark_set = {"darkly", "superhero", "cyborg", "solar"}
+            self.config["ui"]["theme_mode"] = "dark" if theme_name in dark_set else "light"
+            self.log(f"主题已切换为: {theme_name}", "INFO")
+        except Exception as e:
+            self.log(f"切换主题失败: {e}", "WARNING")
+
+    def _apply_density(self, density: str):
+        """应用密度：调整控件行高与 padding。"""
+        sty = getattr(self, "_style", ttk.Style())
+        if density == "compact":
+            row_h = 24
+            pad = 4
+        else:
+            row_h = 28
+            pad = 6
+        try:
+            sty.configure("Treeview", rowheight=row_h)
+            sty.configure("TButton", padding=(8, pad))
+            if tb:
+                sty.configure("Accent.TButton", padding=(10, pad))
+                sty.configure("Secondary.TButton", padding=(8, pad))
+        except Exception:
+            pass
+        self.config.setdefault("ui", {})["density"] = density
 
 def main():
     """主函数"""

@@ -8,3 +8,4 @@ scipy>=1.12.0
 audioread>=3.0.0
 keyboard>=0.13.5
 mouse>=0.7.1 
+ttkbootstrap
