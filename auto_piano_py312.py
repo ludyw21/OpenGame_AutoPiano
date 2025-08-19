@@ -35,6 +35,11 @@ try:
     from meowauto.ui.logview import LogView
 except Exception:
     LogView = None
+# 新增：表格样式工具（斑马纹/悬停）
+try:
+    from meowauto.widgets.table import style_table as _tbl_style, apply_striped as _tbl_striped, bind_hover_highlight as _tbl_hover
+except Exception:
+    _tbl_style = _tbl_striped = _tbl_hover = None
 
 # 导入音频转换模块
 try:
@@ -463,6 +468,37 @@ class Py312AutoPiano:
         content_paned.add(left_frame, weight=3)
         content_paned.add(right_frame, weight=2)
         
+        # 恢复 sash 位置（按比例），并在拖动释放后更新比例
+        def _restore_sash():
+            try:
+                width = content_paned.winfo_width()
+                if width <= 1:
+                    self.root.after(50, _restore_sash)
+                    return
+                ui = self.config.get('ui', {})
+                ratio = ui.get('sash_ratio', None)
+                if isinstance(ratio, (int, float)):
+                    r = max(0.2, min(0.8, float(ratio)))
+                    pos = int(width * r)
+                else:
+                    # 默认左侧约 62%
+                    pos = int(width * 0.62)
+                content_paned.sashpos(0, pos)
+            except Exception:
+                pass
+        self.root.after(0, _restore_sash)
+        
+        def _update_sash_ratio():
+            try:
+                w = max(1, content_paned.winfo_width())
+                p = content_paned.sashpos(0)
+                self.config.setdefault('ui', {})['sash_ratio'] = round(p / w, 4)
+            except Exception:
+                pass
+        content_paned.bind('<ButtonRelease-1>', lambda e: _update_sash_ratio())
+        
+        self._content_paned = content_paned
+        
         # 左侧内容随窗体拉伸
         for i in range(0, 6):
             left_frame.rowconfigure(i, weight=0)
@@ -537,6 +573,17 @@ class Py312AutoPiano:
         
         self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         playlist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 应用表格样式与交互
+        try:
+            if _tbl_style:
+                density = self.config.get('ui', {}).get('density', 'comfortable')
+                sty = getattr(self, '_style', ttk.Style())
+                _tbl_style(sty, density)
+            if _tbl_hover:
+                _tbl_hover(self.playlist_tree)
+        except Exception:
+            pass
         
         # 绑定双击事件
         self.playlist_tree.bind('<Double-1>', self.on_playlist_double_click)
@@ -642,6 +689,15 @@ class Py312AutoPiano:
         self.status_var = tk.StringVar(value="就绪")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN)
         status_bar.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        # 快捷键绑定
+        try:
+            self.root.bind_all('<Control-o>', lambda e: self.browse_mp3())
+            self.root.bind_all('<Control-p>', lambda e: self.toggle_auto_play())
+            self.root.bind_all('<Control-l>', lambda e: self.clear_log())
+            self.root.bind_all('<Control-s>', lambda e: self.save_log())
+        except Exception:
+            pass
     
     def create_key_mapping_table(self, parent):
         """创建键位映射表格"""
@@ -1694,6 +1750,15 @@ class Py312AutoPiano:
         
         # 保存配置
         try:
+            # 记录 sash 位置与比例
+            try:
+                if hasattr(self, '_content_paned') and self._content_paned:
+                    w = max(1, self._content_paned.winfo_width())
+                    p = self._content_paned.sashpos(0)
+                    self.config.setdefault('ui', {})['sash_ratio'] = round(p / w, 4)
+                    self.config['ui']['sashpos'] = int(p)
+            except Exception:
+                pass
             with open("config.json", "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
         except:
@@ -1863,6 +1928,12 @@ class Py312AutoPiano:
                 item['duration'],
                 status
             ))
+        # 斑马纹
+        try:
+            if _tbl_striped:
+                _tbl_striped(self.playlist_tree)
+        except Exception:
+            pass
     
     def on_playlist_double_click(self, event):
         """播放列表双击事件"""
