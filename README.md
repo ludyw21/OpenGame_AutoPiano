@@ -87,3 +87,37 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 本项目的lrcp格式支持参考了[Nuist666/OverField_Auto_Piano: OverField 开放空间 自动弹琴工具](https://github.com/Nuist666/OverField_Auto_Piano)
 
 音频转换MIDI谱来自[azuwis/pianotrans：字节跳动使用踏板进行钢琴转录的简单 GUI](https://github.com/azuwis/pianotrans)
+
+# 许可证
+
+本项目采用 [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-nc-sa/4.0/) 许可证。
+
+## 许可证条款
+
+**您可以：**
+- ✅ **共享** - 以任何媒介或格式复制及分发本材料
+- ✅ **改编** - 重混、转换和基于本材料创作
+- ✅ **署名** - 您必须给出适当的署名，提供指向本许可证的链接，同时标明是否作出了修改
+
+**在以下条件下：**
+- ❌ **非商业性使用** - 您不得将本材料用于商业目的
+- 🔄 **相同方式共享** - 如果您重混、转换或基于本材料创作，您必须按照与原始许可协议相同的条款分发您的贡献
+
+## 署名要求
+
+当您使用、共享或修改本项目时，请包含以下信息：
+
+```
+基于 MeowField_AutoPiano 项目
+原作者：MeowField
+许可证：CC BY-NC-SA 4.0
+项目地址：https://github.com/MeowField/MeowField_AutoPiano
+```
+
+## 完整许可证
+
+完整的许可证文本请访问：[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode)
+
+---
+
+**注意：** 本许可证仅适用于本项目代码和文档。第三方依赖库（如 PianoTrans、ffmpeg 等）遵循其各自的许可证条款。
