@@ -629,24 +629,24 @@ class Py312AutoPiano:
             self.playlist_tree.bind('<Double-1>', self.on_playlist_double_click)
         else:
             playlist_frame = ttk.LabelFrame(left_frame, text="自动演奏列表", padding="12")
-        playlist_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        playlist_frame.columnconfigure(0, weight=1)
-        playlist_toolbar = ttk.Frame(playlist_frame)
-        playlist_toolbar.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(playlist_toolbar, text="添加乐谱", command=self.add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(playlist_toolbar, text="移除选中", command=self.remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(playlist_toolbar, text="清空列表", command=self.clear_playlist).pack(side=tk.LEFT, padx=(0, 5))
-        playlist_display_frame = ttk.Frame(playlist_frame)
-        playlist_display_frame.pack(fill=tk.BOTH, expand=True)
-        columns = ('序号', '文件名', '类型', '时长', '状态')
-        self.playlist_tree = ttk.Treeview(playlist_display_frame, columns=columns, show='headings', height=6)
-        for col in columns:
-            self.playlist_tree.heading(col, text=col)
-            self.playlist_tree.column(col, width=100)
-        playlist_scrollbar = ttk.Scrollbar(playlist_display_frame, orient=tk.VERTICAL, command=self.playlist_tree.yview)
-        self.playlist_tree.configure(yscrollcommand=playlist_scrollbar.set)
-        self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        playlist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            playlist_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+            playlist_frame.columnconfigure(0, weight=1)
+            playlist_toolbar = ttk.Frame(playlist_frame)
+            playlist_toolbar.pack(fill=tk.X, pady=(0, 5))
+            ttk.Button(playlist_toolbar, text="添加乐谱", command=self.add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(playlist_toolbar, text="移除选中", command=self.remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(playlist_toolbar, text="清空列表", command=self.clear_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            playlist_display_frame = ttk.Frame(playlist_frame)
+            playlist_display_frame.pack(fill=tk.BOTH, expand=True)
+            columns = ('序号', '文件名', '类型', '时长', '状态')
+            self.playlist_tree = ttk.Treeview(playlist_display_frame, columns=columns, show='headings', height=6)
+            for col in columns:
+                self.playlist_tree.heading(col, text=col)
+                self.playlist_tree.column(col, width=100)
+            playlist_scrollbar = ttk.Scrollbar(playlist_display_frame, orient=tk.VERTICAL, command=self.playlist_tree.yview)
+            self.playlist_tree.configure(yscrollcommand=playlist_scrollbar.set)
+            self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            playlist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
             try:
                 if _tbl_style:
                     density = self.config.get('ui', {}).get('density', 'comfortable')
@@ -656,7 +656,7 @@ class Py312AutoPiano:
                     _tbl_hover(self.playlist_tree)
             except Exception:
                 pass
-        self.playlist_tree.bind('<Double-1>', self.on_playlist_double_click)
+            self.playlist_tree.bind('<Double-1>', self.on_playlist_double_click)
         
         # 播放控制区域
         control_frame = ttk.LabelFrame(left_frame, text="播放控制", padding="12")
@@ -721,7 +721,7 @@ class Py312AutoPiano:
             else:
                 self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
         except Exception:
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+            self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
         self.progress_bar.pack(fill=tk.X, pady=(0, 5))
         
         # 时间显示
