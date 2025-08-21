@@ -1,7 +1,7 @@
 # MeowField_AutoPiano
 
 MeowField_AutoPiano 是一款面向 PC 游戏的自动弹琴软件，集成音频→MIDI 转换（PianoTrans）、MIDI→LRCp 转换、LRCp/MIDI 双模式自动演奏、3×7（21 键）映射、播放列表自动连播与可视化日志。
-
+交流群：478714322（QQ群）
 
 
 ## 功能特性
@@ -80,7 +80,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ## 提交问题
 - 提交issue请附：复现步骤、问题出现的时间点、相关文件路径、`logs` 中对应时间段日志。
-- 也可以加入反馈交流群：47814322（QQ）
+- 也可以加入反馈交流群：478714322（QQ群）
 
 # 致谢
 
@@ -121,3 +121,4 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ---
 
 **注意：** 本许可证仅适用于本项目代码和文档。第三方依赖库（如 PianoTrans、ffmpeg 等）遵循其各自的许可证条款。
+
