@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify artifacts exist
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist/MeowField_AutoPiano")) {
+            Write-Error "dist/MeowField_AutoPiano not found. Please build locally before running this workflow.";
+            exit 1
+          }
+
+      - name: Prepare zip artifact (only dist/MeowField_AutoPiano)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifact -Force | Out-Null
+          Compress-Archive -Path "dist/MeowField_AutoPiano/*" -DestinationPath "artifact/MeowField_AutoPiano.zip" -Force
+
+      - name: Create GitHub Release (V1.0.1)
+        uses: ncipollo/release-action@v1
+        with:
+          tag: V1.0.1
+          name: V1.0.1
+          body: |
+            MeowField_AutoPiano Release (Windows)
+            
+            Assets:
+            - MeowField_AutoPiano.zip (contents of dist/MeowField_AutoPiano)
+            - MeowField_AutoPiano.exe
+          draft: false
+          prerelease: false
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: |
+            artifact/MeowField_AutoPiano.zip,
+            dist/MeowField_AutoPiano/MeowField_AutoPiano.exe
+          token: ${{ secrets.GITHUB_TOKEN }} 

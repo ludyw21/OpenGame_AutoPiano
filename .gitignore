@@ -1,0 +1,19 @@
+__pycache__/
+.tasks/
+
+logs/
+
+.lrcp/
+.m4a/
+.mp3/
+.mp4/
+.ogg/
+.wav/
+.wma/
+
+build/
+
+# Scores & MIDI
+*.lrcp
+*.mid
+*.midi
