@@ -151,12 +151,12 @@
         "language": "zh_CN",
         "font_family": "Microsoft YaHei",
         "font_size": 10,
-        "theme_name": "superhero",
+        "theme_name": "cyborg",
         "theme_mode": "dark",
         "density": "compact",
         "scaling": "auto",
-        "sashpos": 629,
-        "sash_ratio": 0.4558,
+        "sashpos": 672,
+        "sash_ratio": 0.487,
         "sidebar_stub": true
     }
 }

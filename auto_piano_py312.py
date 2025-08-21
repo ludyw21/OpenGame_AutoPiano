@@ -59,6 +59,11 @@ try:
     from meowauto.ui.playlist import PlaylistView as _PlaylistView
 except Exception:
     _PlaylistView = None
+# 倒计时
+try:
+    from meowauto import CountdownTimer as _CountdownTimer
+except Exception:
+    _CountdownTimer = None
 
 # 导入音频转换模块
 try:
@@ -243,6 +248,9 @@ class Py312AutoPiano:
         self.auto_play_thread = None
         self.current_tempo = 120
         self.current_volume = 0.7
+        # 倒计时状态
+        self._countdown_active = False
+        self._countdown_after_id = None
         
         # 加载键位映射
         self.load_key_mappings()
@@ -514,6 +522,12 @@ class Py312AutoPiano:
         try:
             if ToolTip is not None:
                 ToolTip(density_combo, text="切换控件密度（紧凑/舒适）")
+        except Exception:
+            pass
+        # 倒计时设置（可选）
+        try:
+            from meowauto.ui.countdown_settings import CountdownSettings as _CountdownSettings
+            _cd = _CountdownSettings(appearance_bar, self)
         except Exception:
             pass
         
@@ -1404,28 +1418,63 @@ class Py312AutoPiano:
         self.log("MIDI播放已停止", "INFO")
     
     def toggle_auto_play(self):
-        """切换自动弹琴模式"""
-        mode = getattr(self, 'play_mode_var', None)
-        mode = mode.get() if mode else 'auto'
-        if mode == 'lrcp':
-            if hasattr(self, 'score_events') and self.score_events:
-                self.start_auto_play() if not self.is_auto_playing else self.stop_auto_play()
-            else:
-                messagebox.showerror("错误", "请先加载LRCp乐谱文件")
+        """切换自动弹琴模式（外部模块倒计时）。"""
+        # 若正在倒计时，则取消
+        if hasattr(self, '_countdown') and self._countdown and self._countdown.active:
+            self._countdown.cancel()
             return
-        elif mode == 'midi':
-            if self.midi_file and os.path.exists(self.midi_file):
-                self.start_auto_play_midi() if not self.is_auto_playing else self.stop_auto_play()
-            else:
-                messagebox.showerror("错误", "请先选择MIDI文件")
+        # 已在演奏 → 直接停止
+        if getattr(self, 'is_auto_playing', False):
+            self.stop_auto_play()
             return
-        # auto 模式
-        if hasattr(self, 'score_events') and self.score_events:
-            self.start_auto_play() if not self.is_auto_playing else self.stop_auto_play()
-        elif self.midi_file and os.path.exists(self.midi_file):
-            self.start_auto_play_midi() if not self.is_auto_playing else self.stop_auto_play()
+        # 选择模式与校验
+        mode_var = getattr(self, 'play_mode_var', None)
+        mode = mode_var.get() if mode_var else 'auto'
+        def _has_lrcp():
+            return hasattr(self, 'score_events') and bool(self.score_events)
+        def _has_midi():
+            return bool(self.midi_file and os.path.exists(self.midi_file))
+        if mode == 'lrcp' and not _has_lrcp():
+            messagebox.showerror("错误", "请先加载LRCp乐谱文件")
+            return
+        if mode == 'midi' and not _has_midi():
+            messagebox.showerror("错误", "请先选择MIDI文件")
+            return
+        # 选择目标启动函数
+        if mode == 'lrcp' or (mode == 'auto' and _has_lrcp()):
+            target_start = self.start_auto_play
+        elif mode == 'midi' or (mode == 'auto' and _has_midi()):
+            target_start = self.start_auto_play_midi
         else:
             messagebox.showerror("错误", "请先加载乐谱文件(.lrcp)或选择MIDI文件")
+            return
+        # 读取倒计时秒数
+        countdown_secs = 5
+        try:
+            countdown_secs = int(self.config.get('settings', {}).get('countdown_secs', 5))
+        except Exception:
+            countdown_secs = 5
+        if _CountdownTimer is None:
+            # 回退：直接启动
+            target_start()
+            return
+        # 配置倒计时
+        def _on_tick(rem: int):
+            self.status_var.set(f"即将开始自动弹琴：{rem} 秒… 请切换到游戏界面")
+            self.log(f"倒计时：{rem}")
+            self.auto_play_button.config(text="取消倒计时", state=tk.NORMAL)
+        def _on_finish():
+            self.auto_play_button.config(text="停止弹琴", state=tk.NORMAL)
+            try:
+                target_start()
+            except Exception as e:
+                self.log(f"启动自动弹琴失败: {e}", "ERROR")
+        def _on_cancel():
+            self.status_var.set("倒计时已取消")
+            self.log("倒计时已取消", "INFO")
+            self.auto_play_button.config(text="自动弹琴", state=tk.NORMAL)
+        self._countdown = _CountdownTimer(self.root, countdown_secs, _on_tick, _on_finish, _on_cancel)
+        self._countdown.start()
     
     def start_auto_play(self):
         """开始自动弹琴"""
