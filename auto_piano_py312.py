@@ -215,7 +215,7 @@ class KeySender:
 class Py312AutoPiano:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("MeowField_AutoPiano v1.0")
+        self.root.title("MeowField_AutoPiano v1.0.2")
         self.root.geometry("1400x900")
         self.root.resizable(True, True)
         
@@ -724,9 +724,9 @@ class Py312AutoPiano:
         mode_frame = ttk.Frame(control_frame)
         mode_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(20, 0))
         ttk.Label(mode_frame, text="演奏模式:").pack()
-        self.play_mode_var = tk.StringVar(value="auto")
+        self.play_mode_var = tk.StringVar(value="midi")
         mode_combo = ttk.Combobox(mode_frame, textvariable=self.play_mode_var, state="readonly",
-            values=["auto", "lrcp", "midi"])
+            values=["lrcp", "midi"])
         mode_combo.pack()
         ttk.Label(mode_frame, text="映射策略:").pack(pady=(8,0))
         self.mapping_strategy_var = tk.StringVar(value="folded")
@@ -765,14 +765,13 @@ class Py312AutoPiano:
         self.time_var = tk.StringVar(value="00:00 / 00:00")
         time_label = ttk.Label(progress_frame, textvariable=self.time_var)
         time_label.pack()
-        
-        # 键位映射显示
-        mapping_frame = ttk.LabelFrame(left_frame, text="键位映射", padding="12")
+
+        # 帮助说明显示
+        mapping_frame = ttk.LabelFrame(left_frame, text="帮助说明", padding="12")
         mapping_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
-        # 创建键位映射表格
-        self.create_key_mapping_table(mapping_frame)
-        
+        # 帮助文本
+        ttk.Label(mapping_frame, text="热键ctrl+shift+c暂停/继续演奏，新版本不自带pianotrans（音频转换模型）需要单独下载，下载好后将文件夹移入根目录即可正常使用", justify=tk.LEFT, wraplength=600).pack(fill=tk.X)
         # 日志区域
         log_frame = ttk.LabelFrame(right_frame, text="操作日志", padding="12")
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -1461,7 +1460,7 @@ class Py312AutoPiano:
             return
         # 选择模式与校验
         mode_var = getattr(self, 'play_mode_var', None)
-        mode = mode_var.get() if mode_var else 'auto'
+        mode = mode_var.get() if mode_var else 'midi'
         def _has_lrcp():
             return hasattr(self, 'score_events') and bool(self.score_events)
         def _has_midi():
@@ -1473,12 +1472,12 @@ class Py312AutoPiano:
             messagebox.showerror("错误", "请先选择MIDI文件")
             return
         # 选择目标启动函数
-        if mode == 'lrcp' or (mode == 'auto' and _has_lrcp()):
+        if mode == 'lrcp':
             target_start = self.start_auto_play
-        elif mode == 'midi' or (mode == 'auto' and _has_midi()):
+        elif mode == 'midi':
             target_start = self.start_auto_play_midi
         else:
-            messagebox.showerror("错误", "请先加载乐谱文件(.lrcp)或选择MIDI文件")
+            messagebox.showerror("错误", "请选择演奏模式")
             return
         # 读取倒计时秒数
         countdown_secs = 5
@@ -2931,9 +2930,13 @@ class Py312AutoPiano:
             topbar = ttk.Frame(self._sidebar_container)
             topbar.pack(fill=tk.X)
             self._sidebar_toggle = ttk.Button(
-                topbar, text='≡', width=2, command=lambda: self._toggle_sidebar_stub())
+                topbar, text='≡ 展开/收起', width=10, style=self.accent_button_style, command=lambda: self._toggle_sidebar_stub())
             self._sidebar_toggle.pack(side=tk.LEFT, pady=4)
-            ttk.Label(topbar, text="Sidebar").pack(side=tk.LEFT, padx=6)
+            try:
+                if ToolTip is not None:
+                    ToolTip(self._sidebar_toggle, text="展开/收起侧边栏")
+            except Exception:
+                pass
             ttk.Separator(self._sidebar_container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(2,6))
             # Notebook 页签
             nb = ttk.Notebook(self._sidebar_container)
