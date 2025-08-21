@@ -137,7 +137,7 @@
         "default_volume": 0.7,
         "enable_progress_bar": true,
         "auto_save_config": true,
-        "countdown_secs": 12
+        "countdown_secs": 1
     },
     "paths": {
         "piano_trans": "PianoTrans-v1.0/PianoTrans.exe",
