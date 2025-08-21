@@ -682,6 +682,12 @@ class Py312AutoPiano:
         
         self.auto_play_button = ttk.Button(button_frame, text="自动弹琴", command=self.toggle_auto_play, style=self.accent_button_style)
         self.auto_play_button.pack(pady=(0, 5))
+        try:
+            from meowauto.ui.countdown_settings import CountdownSettings as _CountdownSettings
+            _cd_ctrl = _CountdownSettings(button_frame, self)
+            _cd_ctrl.attach(pady=(4, 0))
+        except Exception:
+            pass
         
         # 控制参数
         param_frame = ttk.Frame(control_frame)

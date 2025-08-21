@@ -136,7 +136,8 @@
         "max_log_lines": 1000,
         "default_volume": 0.7,
         "enable_progress_bar": true,
-        "auto_save_config": true
+        "auto_save_config": true,
+        "countdown_secs": 15
     },
     "paths": {
         "piano_trans": "PianoTrans-v1.0/PianoTrans.exe",
@@ -155,8 +156,8 @@
         "theme_mode": "dark",
         "density": "compact",
         "scaling": "auto",
-        "sashpos": 672,
-        "sash_ratio": 0.487,
+        "sashpos": 742,
+        "sash_ratio": 0.5377,
         "sidebar_stub": true
     }
 }
