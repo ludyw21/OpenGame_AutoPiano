@@ -697,6 +697,21 @@ class Py312AutoPiano:
         self.tempo_var = tk.DoubleVar(value=1.0)
         tempo_scale = ttk.Scale(param_frame, from_=0.5, to=2.0, variable=self.tempo_var, orient=tk.HORIZONTAL)
         tempo_scale.pack()
+        # 速度显示与重置
+        self.tempo_value_var = tk.StringVar(value="1.00x")
+        def _on_tempo_change(*_):
+            try:
+                self.tempo_value_var.set(f"{float(self.tempo_var.get() or 1.0):.2f}x")
+            except Exception:
+                pass
+        try:
+            self.tempo_var.trace_add('write', _on_tempo_change)
+        except Exception:
+            pass
+        speed_info = ttk.Frame(param_frame)
+        speed_info.pack()
+        ttk.Label(speed_info, textvariable=self.tempo_value_var, width=6).pack(side=tk.LEFT, padx=(4, 6))
+        ttk.Button(speed_info, text="重置", command=lambda: self.tempo_var.set(1.0), style=self.secondary_button_style).pack(side=tk.LEFT)
         
         ttk.Label(param_frame, text="音量:").pack()
         self.volume_var = tk.DoubleVar(value=0.7)
@@ -1834,13 +1849,13 @@ class Py312AutoPiano:
             
             # 排序并按速度缩放
             actions.sort(key=lambda x: x[0])
-            speed = float(self.tempo_var.get() or 1.0)
             start_time = time.time()
             idx = 0
             jitter = 0.003
             while idx < len(actions) and self.is_auto_playing:
                 # 目标时间（按速度缩放）
-                group_time = actions[idx][0] / max(0.01, speed)
+                _speed = float(self.tempo_var.get() or 1.0)
+                group_time = actions[idx][0] / max(0.01, _speed)
                 # 等待到该批次时间点
                 while True:
                     now = time.time()
@@ -1854,7 +1869,7 @@ class Py312AutoPiano:
                 j = idx
                 press_keys: List[str] = []
                 release_keys: List[str] = []
-                while j < len(actions) and abs(actions[j][0] / max(0.01, speed) - group_time) <= jitter:
+                while j < len(actions) and abs(actions[j][0] / max(0.01, _speed) - group_time) <= jitter:
                     _, typ, keys = actions[j]
                     if typ == 'release':
                         release_keys.extend(keys)

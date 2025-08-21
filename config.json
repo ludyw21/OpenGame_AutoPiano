@@ -137,7 +137,7 @@
         "default_volume": 0.7,
         "enable_progress_bar": true,
         "auto_save_config": true,
-        "countdown_secs": 15
+        "countdown_secs": 1
     },
     "paths": {
         "piano_trans": "PianoTrans-v1.0/PianoTrans.exe",
@@ -152,8 +152,8 @@
         "language": "zh_CN",
         "font_family": "Microsoft YaHei",
         "font_size": 10,
-        "theme_name": "cyborg",
-        "theme_mode": "dark",
+        "theme_name": "cosmo",
+        "theme_mode": "light",
         "density": "compact",
         "scaling": "auto",
         "sashpos": 742,
