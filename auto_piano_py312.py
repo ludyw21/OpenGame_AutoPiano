@@ -827,6 +827,14 @@ class Py312AutoPiano:
         
         # 默认显示 Meow 页
         self._switch_page('meow')
+        
+        # 注册全局热键：Ctrl+Shift+C 暂停/继续自动弹琴
+        self._global_hotkey_handle = None
+        try:
+            self._global_hotkey_handle = keyboard.add_hotkey('ctrl+shift+c', lambda: self.root.after(0, self.pause_or_resume_auto))
+            self.log("全局热键已注册：Ctrl+Shift+C（暂停/继续自动弹琴）", "INFO")
+        except Exception as e:
+            self.log(f"注册全局热键失败：{e}", "WARNING")
     
     def create_key_mapping_table(self, parent):
         """创建键位映射表格"""
@@ -1942,11 +1950,16 @@ class Py312AutoPiano:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
         except:
             pass
-        
         # 销毁侧边栏窗口
         try:
             if hasattr(self, '_sidebar_win') and self._sidebar_win:
                 self._sidebar_win.destroy()
+        except Exception:
+            pass
+        # 卸载全局热键
+        try:
+            if getattr(self, '_global_hotkey_handle', None) is not None:
+                keyboard.remove_hotkey(self._global_hotkey_handle)
         except Exception:
             pass
         
