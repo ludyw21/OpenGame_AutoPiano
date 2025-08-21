@@ -10,8 +10,38 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - name: Checkout
+      - name: Checkout (with tags)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next tag (auto-increment: 1.0.9 -> 1.1.0)
+        id: ver
+        shell: pwsh
+        run: |
+          git fetch --tags --force | Out-Null
+          $tags = git tag --list 'V*'
+          if (-not $tags) {
+            $major=1; $minor=0; $patch=1
+          } else {
+            $vers = @()
+            foreach ($t in $tags) {
+              $s = $t.TrimStart('V')
+              try { $vers += [version]$s } catch {}
+            }
+            if (-not $vers) { $major=1; $minor=0; $patch=1 }
+            else {
+              $latest = $vers | Sort-Object -Descending | Select-Object -First 1
+              $major = $latest.Major; $minor = $latest.Minor; $patch = $latest.Build
+              $patch++
+              if ($patch -ge 10) { $patch = 0; $minor++ }
+              if ($minor -ge 10) { $minor = 0; $major++ }
+            }
+          }
+          $next = "{0}.{1}.{2}" -f $major, $minor, $patch
+          "tag=V$next" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "name=V$next" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Next tag computed: V$next"
 
       - name: Verify artifacts exist
         shell: pwsh
@@ -27,14 +57,14 @@ jobs:
           New-Item -ItemType Directory -Path artifact -Force | Out-Null
           Compress-Archive -Path "dist/MeowField_AutoPiano/*" -DestinationPath "artifact/MeowField_AutoPiano.zip" -Force
 
-      - name: Create GitHub Release (V1.0.1)
+      - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: V1.0.1
-          name: V1.0.1
+          tag: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.name }}
           body: |
             MeowField_AutoPiano Release (Windows)
-            
+
             Assets:
             - MeowField_AutoPiano.zip (contents of dist/MeowField_AutoPiano)
             - MeowField_AutoPiano.exe
