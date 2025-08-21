@@ -251,6 +251,8 @@ class Py312AutoPiano:
         # 倒计时状态
         self._countdown_active = False
         self._countdown_after_id = None
+        # 自动弹琴暂停状态
+        self.is_auto_paused = False
         
         # 加载键位映射
         self.load_key_mappings()
@@ -804,6 +806,7 @@ class Py312AutoPiano:
             self.root.bind_all('<Control-p>', lambda e: self.toggle_auto_play())
             self.root.bind_all('<Control-l>', lambda e: self.clear_log())
             self.root.bind_all('<Control-s>', lambda e: self.save_log())
+            self.root.bind_all('<Control-Shift-c>', self.pause_or_resume_auto)
         except Exception:
             pass
         
@@ -1500,6 +1503,7 @@ class Py312AutoPiano:
     def start_auto_play(self):
         """开始自动弹琴"""
         self.is_auto_playing = True
+        self.is_auto_paused = False
         self.auto_play_button.config(text="停止弹琴")
         self.status_var.set("自动弹琴中...")
         self.log("开始自动弹琴", "INFO")
@@ -1512,6 +1516,7 @@ class Py312AutoPiano:
     def stop_auto_play(self):
         """停止自动弹琴"""
         self.is_auto_playing = False
+        self.is_auto_paused = False
         self.auto_play_button.config(text="自动弹琴")
         self.status_var.set("自动弹琴已停止")
         self.log("自动弹琴已停止", "INFO")
@@ -1542,10 +1547,17 @@ class Py312AutoPiano:
             idx = 0
             jitter = 0.003
             while idx < len(actions) and self.is_auto_playing:
+                # 若处于暂停，等待恢复
+                while self.is_auto_paused and self.is_auto_playing:
+                    time.sleep(0.05)
                 # 目标时间（按速度缩放）
                 group_time = actions[idx][0] / max(0.01, float(self.tempo_var.get() or 1.0))
                 # 等待到该批次时间点
                 while True:
+                    # 暂停时让等待循环让出CPU
+                    if self.is_auto_paused:
+                        time.sleep(0.05)
+                        continue
                     now = time.time()
                     target = start_time + group_time
                     wait = target - now
@@ -1853,11 +1865,17 @@ class Py312AutoPiano:
             idx = 0
             jitter = 0.003
             while idx < len(actions) and self.is_auto_playing:
+                # 若处于暂停，等待恢复
+                while self.is_auto_paused and self.is_auto_playing:
+                    time.sleep(0.05)
                 # 目标时间（按速度缩放）
                 _speed = float(self.tempo_var.get() or 1.0)
                 group_time = actions[idx][0] / max(0.01, _speed)
                 # 等待到该批次时间点
                 while True:
+                    if self.is_auto_paused:
+                        time.sleep(0.05)
+                        continue
                     now = time.time()
                     target = start_time + group_time
                     wait = target - now
@@ -2966,6 +2984,18 @@ class Py312AutoPiano:
                 self._page_meow.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
         except Exception:
             pass
+
+    def pause_or_resume_auto(self, event=None):
+        """切换自动弹琴暂停/继续（热键：Ctrl+Shift+C）。"""
+        if not getattr(self, 'is_auto_playing', False):
+            return
+        self.is_auto_paused = not self.is_auto_paused
+        if self.is_auto_paused:
+            self.status_var.set("自动弹琴已暂停")
+            self.log("自动弹琴已暂停", "INFO")
+        else:
+            self.status_var.set("自动弹琴继续…")
+            self.log("自动弹琴继续", "INFO")
 
 def main():
     """主函数"""
