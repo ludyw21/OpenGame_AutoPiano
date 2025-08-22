@@ -39,6 +39,44 @@ import re
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 import ctypes
+
+# 新增：核心模块导入
+try:
+    from meowauto.core import Event, KeySender, ConfigManager, Logger
+except ImportError:
+    # 回退到本地定义（如果模块不可用）
+    from dataclasses import dataclass
+    @dataclass
+    class Event:
+        """乐谱事件"""
+        start: float
+        end: float
+        keys: List[str]
+    
+    class KeySender:
+        """按键发送器，管理按键状态"""
+        def __init__(self):
+            self.active_count = {}
+        def press(self, keys): pass
+        def release(self, keys): pass
+        def release_all(self): pass
+    
+    class ConfigManager:
+        """配置管理器"""
+        def __init__(self): pass
+        def load_config(self): return {}
+        def save_config(self): pass
+        def get(self, key, default=None): return default
+        def set(self, key, value): pass
+        def export_config(self): return False
+    
+    class Logger:
+        """日志系统"""
+        def __init__(self): pass
+        def log(self, message, level="INFO"): print(f"[{level}] {message}")
+        def clear_log(self): pass
+        def save_log(self): return False
+
 # 新增：模块化日志视图
 try:
     from meowauto.ui.logview import LogView
@@ -65,14 +103,36 @@ try:
 except Exception:
     _CountdownTimer = None
 
-# 导入音频转换模块
+# 新增：音频处理模块
+try:
+    from meowauto.audio import AudioConverter, MidiProcessor, PianoTransManager
+    AUDIO_MODULES_AVAILABLE = True
+except ImportError:
+    AUDIO_MODULES_AVAILABLE = False
+    # 回退定义
+    class AudioConverter:
+        def __init__(self, logger): pass
+        def convert_audio_to_midi(self, audio_path, output_path=None): return False
+        def batch_convert(self, folder_path, output_dir=None): return {"success": False}
+    
+    class MidiProcessor:
+        def __init__(self, logger): pass
+        def analyze_midi_file(self, midi_path): return {}
+        def play_midi(self, midi_path, progress_callback=None): return False
+        def stop_midi(self): pass
+    
+    class PianoTransManager:
+        def __init__(self, logger): pass
+        def check_configuration(self): return {"piano_trans_found": False, "model_found": False}
+
+# 导入音频转换模块（保持向后兼容）
 try:
     from audio_to_midi_converter import AudioToMidiConverter
     AUDIO_CONVERTER_AVAILABLE = True
 except ImportError:
     AUDIO_CONVERTER_AVAILABLE = False
 
-# 导入PianoTrans配置模块
+# 导入PianoTrans配置模块（保持向后兼容）
 try:
     from pianotrans_config import PianoTransConfig
     PIANOTRANS_CONFIG_AVAILABLE = True
@@ -84,13 +144,6 @@ TS_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]")
 
 # 允许的音符 token 正则表达式
 TOKEN_RE = re.compile(r"(?:(?:[LMH][1-7])|(?:C|Dm|Em|F|G|Am|G7))")
-
-@dataclass
-class Event:
-    """乐谱事件"""
-    start: float          # 按下时间（秒）
-    end: float            # 释放时间（秒），若与 start 相同表示立刻松开（tap）
-    keys: List[str]       # 同步触发的一组按键（和弦/多音）
 
 def _ts_match_to_seconds(m: re.Match) -> float:
     """将时间戳匹配转换为秒数"""
@@ -219,8 +272,10 @@ class Py312AutoPiano:
         self.root.geometry("1400x900")
         self.root.resizable(True, True)
         
-        # 初始化配置
-        self.config = self.load_config()
+        # 初始化核心模块
+        self.config_manager = ConfigManager()
+        self.config = self.config_manager.config
+        self.logger = Logger()
         
         # 先设定按钮风格默认值，防止外观初始化失败导致属性缺失
         self.accent_button_style = "TButton"
@@ -229,7 +284,7 @@ class Py312AutoPiano:
         # 外观初始化（主题/缩放/密度）
         try:
             if _AppearanceManager is not None:
-                self._appearance = _AppearanceManager(self, self.config, self.log)
+                self._appearance = _AppearanceManager(self, self.config, self.logger.log)
                 self._appearance.init()
             else:
                 self._init_appearance()
@@ -239,6 +294,10 @@ class Py312AutoPiano:
         
         # 设置图标和样式
         self.setup_ui()
+        
+        # 设置日志系统的GUI组件
+        if hasattr(self, 'log_text'):
+            self.logger.set_gui_components(self.log_text, self.root)
         
         # 初始化变量
         self.midi_file = None
@@ -254,22 +313,20 @@ class Py312AutoPiano:
         # 自动弹琴暂停状态
         self.is_auto_paused = False
         
-        # 加载键位映射
-        self.load_key_mappings()
+        # 从配置管理器获取键位映射
+        self.key_mapping = self.config_manager.key_mapping
+        self.note_mapping = self.config_manager.note_mapping
         
         # 初始化pygame音频
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
             pygame.mixer.music.set_volume(self.current_volume)
-            self.log("音频系统初始化成功", "SUCCESS")
+            self.logger.log("音频系统初始化成功", "SUCCESS")
         except Exception as e:
-            self.log(f"音频系统初始化失败: {e}", "WARNING")
+            self.logger.log(f"音频系统初始化失败: {e}", "WARNING")
         
         # 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
-        # 创建输出目录
-        self.create_directories()
         
         # 初始化播放列表
         self.playlist_items = []
@@ -277,21 +334,31 @@ class Py312AutoPiano:
         self.random_play = False
         self.loop_play = False
         
-        # 初始化音频转换器
-        if AUDIO_CONVERTER_AVAILABLE:
-            self.audio_converter = AudioToMidiConverter(self.log)
-            self.log("音频转换模块已加载", "SUCCESS")
+        # 初始化音频处理模块
+        if AUDIO_MODULES_AVAILABLE:
+            self.audio_converter = AudioConverter(self.logger)
+            self.midi_processor = MidiProcessor(self.logger)
+            self.pianotrans_manager = PianoTransManager(self.logger)
+            self.logger.log("音频处理模块已加载", "SUCCESS")
         else:
-            self.audio_converter = None
-            self.log("音频转换模块未加载，将使用传统方法", "WARNING")
-        
-        # 初始化PianoTrans配置器
-        if PIANOTRANS_CONFIG_AVAILABLE:
-            self.pianotrans_config = PianoTransConfig(self.log)
-            self.log("PianoTrans配置模块已加载", "SUCCESS")
-        else:
-            self.pianotrans_config = None
-            self.log("PianoTrans配置模块未加载", "WARNING")
+            # 回退到原有方式
+            if AUDIO_CONVERTER_AVAILABLE:
+                self.audio_converter = AudioToMidiConverter(self.logger.log)
+                self.logger.log("音频转换模块已加载（回退模式）", "SUCCESS")
+            else:
+                self.audio_converter = None
+                self.logger.log("音频转换模块未加载，将使用传统方法", "WARNING")
+            
+            if PIANOTRANS_CONFIG_AVAILABLE:
+                self.pianotrans_config = PianoTransConfig(self.logger.log)
+                self.logger.log("PianoTrans配置模块已加载（回退模式）", "SUCCESS")
+            else:
+                self.pianotrans_config = None
+                self.logger.log("PianoTrans配置模块未加载", "WARNING")
+            
+            # 创建空的处理器
+            self.midi_processor = None
+            self.pianotrans_manager = None
     
     def load_config(self):
         """加载配置文件"""
@@ -461,7 +528,7 @@ class Py312AutoPiano:
                 else:
                     self._apply_theme(self.theme_var.get())
             except Exception as e:
-                self.log(f"主题切换失败: {e}", "WARNING")
+                self.logger.log(f"主题切换失败: {e}", "WARNING")
         theme_combo.bind('<<ComboboxSelected>>', _on_theme_change)
         try:
             if ToolTip is not None:
@@ -498,7 +565,7 @@ class Py312AutoPiano:
                     self._apply_theme(target)
                 self.config.setdefault("ui", {})["theme_mode"] = mode
             except Exception as e:
-                self.log(f"模式切换失败: {e}", "WARNING")
+                self.logger.log(f"模式切换失败: {e}", "WARNING")
         mode_combo.bind('<<ComboboxSelected>>', _on_mode_change)
         try:
             if ToolTip is not None:
@@ -519,7 +586,7 @@ class Py312AutoPiano:
                 else:
                     self._apply_density(self.density_var.get())
             except Exception as e:
-                self.log(f"密度切换失败: {e}", "WARNING")
+                self.logger.log(f"密度切换失败: {e}", "WARNING")
         density_combo.bind('<<ComboboxSelected>>', _on_density_change)
         try:
             if ToolTip is not None:
@@ -831,9 +898,9 @@ class Py312AutoPiano:
         self._global_hotkey_handle = None
         try:
             self._global_hotkey_handle = keyboard.add_hotkey('ctrl+shift+c', lambda: self.root.after(0, self.pause_or_resume_auto))
-            self.log("全局热键已注册：Ctrl+Shift+C（暂停/继续自动弹琴）", "INFO")
+            self.logger.log("全局热键已注册：Ctrl+Shift+C（暂停/继续自动弹琴）", "INFO")
         except Exception as e:
-            self.log(f"注册全局热键失败：{e}", "WARNING")
+            self.logger.log(f"注册全局热键失败：{e}", "WARNING")
     
     def create_key_mapping_table(self, parent):
         """创建键位映射表格"""
@@ -886,7 +953,7 @@ class Py312AutoPiano:
     def clear_log(self):
         """清空日志"""
         self.log_text.delete("1.0", tk.END)
-        self.log("日志已清空", "INFO")
+        self.logger.log("日志已清空", "INFO")
     
     def save_log(self):
         """保存日志到文件"""
@@ -894,9 +961,9 @@ class Py312AutoPiano:
             filename = f"logs/log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(self.log_text.get("1.0", tk.END))
-            self.log(f"日志已保存到: {filename}", "SUCCESS")
+            self.logger.log(f"日志已保存到: {filename}", "SUCCESS")
         except Exception as e:
-            self.log(f"保存日志失败: {str(e)}", "ERROR")
+            self.logger.log(f"保存日志失败: {str(e)}", "ERROR")
     
     def export_config(self):
         """导出配置"""
@@ -909,9 +976,9 @@ class Py312AutoPiano:
             if filename:
                 with open(filename, "w", encoding="utf-8") as f:
                     json.dump(self.config, f, indent=4, ensure_ascii=False)
-                self.log(f"配置已导出到: {filename}", "SUCCESS")
+                self.logger.log(f"配置已导出到: {filename}", "SUCCESS")
         except Exception as e:
-            self.log(f"导出配置失败: {str(e)}", "ERROR")
+            self.logger.log(f"导出配置失败: {str(e)}", "ERROR")
     
     def browse_mp3(self):
         """浏览音频文件"""
@@ -927,7 +994,7 @@ class Py312AutoPiano:
         )
         if file_path:
             self.mp3_path_var.set(file_path)
-            self.log(f"已选择音频文件: {file_path}", "INFO")
+            self.logger.log(f"已选择音频文件: {file_path}", "INFO")
     
     def browse_midi(self):
         """浏览MIDI文件"""
@@ -938,7 +1005,7 @@ class Py312AutoPiano:
         if file_path:
             self.midi_path_var.set(file_path)
             self.midi_file = file_path
-            self.log(f"已选择MIDI文件: {file_path}", "INFO")
+            self.logger.log(f"已选择MIDI文件: {file_path}", "INFO")
             self.analyze_midi_file(file_path)
             
             # 自动转换为LRCp，无需确认
@@ -955,12 +1022,12 @@ class Py312AutoPiano:
                 with open(file_path, "r", encoding="utf-8") as f:
                     score_text = f.read()
                 self.score_events = parse_score(score_text)
-                self.log(f"成功加载乐谱文件: {file_path}", "SUCCESS")
+                self.logger.log(f"成功加载乐谱文件: {file_path}", "SUCCESS")
                 messagebox.showinfo("提示", f"成功加载乐谱文件: {file_path}")
                 self.score_path_var.set(file_path)
                 self.analyze_score_file()
             except Exception as e:
-                self.log(f"加载乐谱文件失败: {str(e)}", "ERROR")
+                self.logger.log(f"加载乐谱文件失败: {str(e)}", "ERROR")
                 messagebox.showerror("错误", f"加载乐谱文件失败: {str(e)}")
     
     def batch_convert(self):
@@ -983,7 +1050,7 @@ class Py312AutoPiano:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
-        self.log(f"开始批量转换 {len(audio_files)} 个音频文件...", "INFO")
+        self.logger.log(f"开始批量转换 {len(audio_files)} 个音频文件...", "INFO")
         
         # 在新线程中执行批量转换
         batch_thread = threading.Thread(target=self._batch_convert_thread, args=(folder_path, audio_files, output_dir))
@@ -1060,27 +1127,27 @@ class Py312AutoPiano:
                     
                     if os.path.exists(midi_output):
                         success_count += 1
-                        self.root.after(0, lambda msg=f"转换成功: {audio_file}": self.log(msg, "SUCCESS"))
+                        self.root.after(0, lambda msg=f"转换成功: {audio_file}": self.logger.log(msg, "SUCCESS"))
                     else:
                         error_detail = stderr if stderr else stdout
-                        self.root.after(0, lambda msg=f"转换失败: {audio_file} - {error_detail}": self.log(msg, "ERROR"))
+                        self.root.after(0, lambda msg=f"转换失败: {audio_file} - {error_detail}": self.logger.log(msg, "ERROR"))
                 
                 except subprocess.TimeoutExpired:
-                    self.root.after(0, lambda msg=f"转换超时: {audio_file}": self.log(msg, "WARNING"))
+                    self.root.after(0, lambda msg=f"转换超时: {audio_file}": self.logger.log(msg, "WARNING"))
                 except Exception as e:
-                    self.root.after(0, lambda msg=f"转换错误 {audio_file}: {str(e)}": self.log(msg, "ERROR"))
+                    self.root.after(0, lambda msg=f"转换错误 {audio_file}: {str(e)}": self.logger.log(msg, "ERROR"))
             
             self.root.after(0, lambda: self._batch_convert_complete(success_count, len(audio_files), output_dir))
             
         except Exception as e:
-            self.root.after(0, lambda: self.log(f"批量转换失败: {str(e)}", "ERROR"))
+            self.root.after(0, lambda: self.logger.log(f"批量转换失败: {str(e)}", "ERROR"))
     
     def _batch_convert_complete(self, success_count, total_count, output_dir):
         """批量转换完成"""
         self.status_var.set("批量转换完成")
         messagebox.showinfo("批量转换完成", 
                           f"转换完成！\n成功: {success_count}/{total_count}\n输出目录: {output_dir}")
-        self.log(f"批量转换完成: {success_count}/{total_count} 成功", "SUCCESS")
+        self.logger.log(f"批量转换完成: {success_count}/{total_count} 成功", "SUCCESS")
     
     def convert_mp3_to_midi(self):
         """使用新的音频转换器转换音频到MIDI"""
@@ -1101,18 +1168,18 @@ class Py312AutoPiano:
                 if script_path and os.path.exists(script_path):
                     use_new_converter = True
                 else:
-                    self.log("未检测到PianoTrans.py脚本，改用exe方案", "INFO")
+                    self.logger.log("未检测到PianoTrans.py脚本，改用exe方案", "INFO")
             except Exception:
-                self.log("检测PianoTrans脚本失败，改用exe方案", "WARNING")
+                self.logger.log("检测PianoTrans脚本失败，改用exe方案", "WARNING")
         
         if use_new_converter:
-            self.log("使用新的音频转换器...", "INFO")
+            self.logger.log("使用新的音频转换器...", "INFO")
             self._convert_with_new_converter(audio_path)
         elif self.pianotrans_config:
-            self.log("使用PianoTrans配置方法(Exe，无 -o 参数，自动解析输出)...", "INFO")
+            self.logger.log("使用PianoTrans配置方法(Exe，无 -o 参数，自动解析输出)...", "INFO")
             self._convert_with_pianotrans_config(audio_path)
         else:
-            self.log("使用传统PianoTrans方法(Exe)...", "INFO")
+            self.logger.log("使用传统PianoTrans方法(Exe)...", "INFO")
             self._convert_with_traditional_method(audio_path)
     
     def _convert_with_pianotrans_config(self, audio_path):
@@ -1123,12 +1190,12 @@ class Py312AutoPiano:
             output_name = os.path.splitext(os.path.basename(audio_path))[0]
             midi_output = os.path.join(output_dir, f"{output_name}.mid")
             
-            self.log("开始转换音频到MIDI...", "INFO")
+            self.logger.log("开始转换音频到MIDI...", "INFO")
             self.status_var.set("正在转换...")
             
             # 异步转换
             def progress_callback(message):
-                self.root.after(0, lambda: self.log(f"转换进度: {message}", "INFO"))
+                self.root.after(0, lambda: self.logger.log(f"转换进度: {message}", "INFO"))
             
             def complete_callback(success, output_path):
                 if success:
@@ -1144,7 +1211,7 @@ class Py312AutoPiano:
             )
             
         except Exception as e:
-            self.log(f"转换失败: {str(e)}", "ERROR")
+            self.logger.log(f"转换失败: {str(e)}", "ERROR")
             self._conversion_error(f"转换失败: {str(e)}")
     
     def _convert_with_new_converter(self, audio_path):
@@ -1155,12 +1222,12 @@ class Py312AutoPiano:
             output_name = os.path.splitext(os.path.basename(audio_path))[0]
             midi_output = os.path.join(output_dir, f"{output_name}.mid")
             
-            self.log("开始转换音频到MIDI...", "INFO")
+            self.logger.log("开始转换音频到MIDI...", "INFO")
             self.status_var.set("正在转换...")
             
             # 异步转换
             def progress_callback(message):
-                self.root.after(0, lambda: self.log(f"转换进度: {message}", "INFO"))
+                self.root.after(0, lambda: self.logger.log(f"转换进度: {message}", "INFO"))
             
             def complete_callback(success, output_path):
                 if success:
@@ -1176,7 +1243,7 @@ class Py312AutoPiano:
             )
             
         except Exception as e:
-            self.log(f"转换失败: {str(e)}", "ERROR")
+            self.logger.log(f"转换失败: {str(e)}", "ERROR")
             self._conversion_error(f"转换失败: {str(e)}")
     
     def _convert_with_traditional_method(self, audio_path):
@@ -1199,7 +1266,7 @@ class Py312AutoPiano:
                 messagebox.showerror("错误", "找不到PianoTrans.exe，请确保PianoTrans-v1.0文件夹存在")
                 return
         
-        self.log("开始转换音频到MIDI...", "INFO")
+        self.logger.log("开始转换音频到MIDI...", "INFO")
         self.status_var.set("正在转换...")
         
         # 在新线程中执行转换
@@ -1238,7 +1305,7 @@ class Py312AutoPiano:
                 for alt_path in alt_model_paths:
                     if os.path.exists(alt_path):
                         model_path = alt_path
-                        self.log(f"找到模型文件: {model_path}", "INFO")
+                        self.logger.log(f"找到模型文件: {model_path}", "INFO")
                         break
                 
                 if not os.path.exists(model_path):
@@ -1247,7 +1314,7 @@ class Py312AutoPiano:
                     for root, dirs, files in os.walk(piano_trans_dir):
                         if "note_F1=0.9677_pedal_F1=0.9186.pth" in files:
                             model_path = os.path.join(root, "note_F1=0.9677_pedal_F1=0.9186.pth")
-                            self.log(f"搜索到模型文件: {model_path}", "INFO")
+                            self.logger.log(f"搜索到模型文件: {model_path}", "INFO")
                             break
                     
                     if not os.path.exists(model_path):
@@ -1309,7 +1376,7 @@ class Py312AutoPiano:
         """转换完成处理"""
         self.midi_path_var.set(midi_path)
         self.midi_file = midi_path
-        self.log(f"音频转换完成: {midi_path}", "SUCCESS")
+        self.logger.log(f"音频转换完成: {midi_path}", "SUCCESS")
         self.status_var.set("转换完成，正在生成LRCp…")
         self.analyze_midi_file(midi_path)
         # 自动继续转换为LRCp
@@ -1317,7 +1384,7 @@ class Py312AutoPiano:
     
     def _conversion_error(self, error_msg):
         """转换错误处理"""
-        self.log(f"转换错误: {error_msg}", "ERROR")
+        self.logger.log(f"转换错误: {error_msg}", "ERROR")
         self.status_var.set("转换失败")
         messagebox.showerror("转换失败", error_msg)
     
@@ -1325,10 +1392,10 @@ class Py312AutoPiano:
         """分析MIDI文件"""
         try:
             midi = mido.MidiFile(midi_path)
-            self.log(f"MIDI文件分析完成:", "INFO")
-            self.log(f"  轨道数: {len(midi.tracks)}")
-            self.log(f"  总时长: {midi.length:.2f}秒")
-            self.log(f"  时间分辨率: {midi.ticks_per_beat}")
+            self.logger.log(f"MIDI文件分析完成:", "INFO")
+            self.logger.log(f"  轨道数: {len(midi.tracks)}")
+            self.logger.log(f"  总时长: {midi.length:.2f}秒")
+            self.logger.log(f"  时间分辨率: {midi.ticks_per_beat}")
             
             # 分析音符
             note_count = 0
@@ -1337,10 +1404,10 @@ class Py312AutoPiano:
                     if msg.type == 'note_on' and msg.velocity > 0:
                         note_count += 1
             
-            self.log(f"  音符总数: {note_count}")
+            self.logger.log(f"  音符总数: {note_count}")
             
         except Exception as e:
-            self.log(f"MIDI文件分析失败: {str(e)}", "ERROR")
+            self.logger.log(f"MIDI文件分析失败: {str(e)}", "ERROR")
     
     def play_midi(self):
         """播放MIDI文件"""
@@ -1412,7 +1479,7 @@ class Py312AutoPiano:
         self.progress_var.set(0)
         self.time_var.set("00:00 / 00:00")
         self.status_var.set("播放完成")
-        self.log("MIDI播放完成", "SUCCESS")
+        self.logger.log("MIDI播放完成", "SUCCESS")
     
     def _playback_error(self, error_msg):
         """播放错误处理"""
@@ -1421,7 +1488,7 @@ class Py312AutoPiano:
         self.pause_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.DISABLED)
         self.status_var.set("播放失败")
-        self.log(f"播放错误: {error_msg}", "ERROR")
+        self.logger.log(f"播放错误: {error_msg}", "ERROR")
         messagebox.showerror("播放失败", error_msg)
     
     def pause_midi(self):
@@ -1430,12 +1497,12 @@ class Py312AutoPiano:
             pygame.mixer.music.pause()
             self.pause_button.config(text="继续")
             self.status_var.set("已暂停")
-            self.log("MIDI播放已暂停", "INFO")
+            self.logger.log("MIDI播放已暂停", "INFO")
         else:
             pygame.mixer.music.unpause()
             self.pause_button.config(text="暂停")
             self.status_var.set("正在播放")
-            self.log("MIDI播放已继续", "INFO")
+            self.logger.log("MIDI播放已继续", "INFO")
     
     def stop_midi(self):
         """停止播放"""
@@ -1446,7 +1513,7 @@ class Py312AutoPiano:
         self.progress_var.set(0)
         self.time_var.set("00:00 / 00:00")
         self.status_var.set("已停止")
-        self.log("MIDI播放已停止", "INFO")
+        self.logger.log("MIDI播放已停止", "INFO")
     
     def toggle_auto_play(self):
         """切换自动弹琴模式（外部模块倒计时）。"""
@@ -1492,17 +1559,17 @@ class Py312AutoPiano:
         # 配置倒计时
         def _on_tick(rem: int):
             self.status_var.set(f"即将开始自动弹琴：{rem} 秒… 请切换到游戏界面")
-            self.log(f"倒计时：{rem}")
+            self.logger.log(f"倒计时：{rem}")
             self.auto_play_button.config(text="取消倒计时", state=tk.NORMAL)
         def _on_finish():
             self.auto_play_button.config(text="停止弹琴", state=tk.NORMAL)
             try:
                 target_start()
             except Exception as e:
-                self.log(f"启动自动弹琴失败: {e}", "ERROR")
+                self.logger.log(f"启动自动弹琴失败: {e}", "ERROR")
         def _on_cancel():
             self.status_var.set("倒计时已取消")
-            self.log("倒计时已取消", "INFO")
+            self.logger.log("倒计时已取消", "INFO")
             self.auto_play_button.config(text="自动弹琴", state=tk.NORMAL)
         self._countdown = _CountdownTimer(self.root, countdown_secs, _on_tick, _on_finish, _on_cancel)
         self._countdown.start()
@@ -1513,7 +1580,7 @@ class Py312AutoPiano:
         self.is_auto_paused = False
         self.auto_play_button.config(text="停止弹琴")
         self.status_var.set("自动弹琴中...")
-        self.log("开始自动弹琴", "INFO")
+        self.logger.log("开始自动弹琴", "INFO")
         
         # 在新线程中执行自动弹琴
         self.auto_play_thread = threading.Thread(target=self._auto_play_thread)
@@ -1526,7 +1593,7 @@ class Py312AutoPiano:
         self.is_auto_paused = False
         self.auto_play_button.config(text="自动弹琴")
         self.status_var.set("自动弹琴已停止")
-        self.log("自动弹琴已停止", "INFO")
+        self.logger.log("自动弹琴已停止", "INFO")
     
     def _auto_play_thread(self):
         """自动弹琴线程 - 基于时间轴事件"""
@@ -1605,7 +1672,7 @@ class Py312AutoPiano:
                 return self.key_mapping[token]
             return None
         except Exception as e:
-            self.log(f"发送按键失败: {str(e)}", "ERROR")
+            self.logger.log(f"发送按键失败: {str(e)}", "ERROR")
             return None
     
     def _midi_note_to_name(self, midi_note):
@@ -1643,7 +1710,7 @@ class Py312AutoPiano:
         self.is_auto_playing = False
         self.auto_play_button.config(text="自动弹琴")
         self.status_var.set("自动弹琴完成")
-        self.log("自动弹琴完成", "SUCCESS")
+        self.logger.log("自动弹琴完成", "SUCCESS")
         self._auto_advance_next()
     
     def _auto_advance_next(self):
@@ -1653,9 +1720,9 @@ class Py312AutoPiano:
                 next_index = self.current_playlist_index + 1
                 if next_index < len(self.playlist_items):
                     self._play_playlist_item(next_index)
-                    self.log("自动切换到下一首", "INFO")
+                    self.logger.log("自动切换到下一首", "INFO")
                 else:
-                    self.log("列表已结束", "INFO")
+                    self.logger.log("列表已结束", "INFO")
         except Exception:
             pass
     
@@ -1664,7 +1731,7 @@ class Py312AutoPiano:
         self.is_auto_playing = False
         self.auto_play_button.config(text="自动弹琴")
         self.status_var.set("自动弹琴失败")
-        self.log(f"自动弹琴错误: {error_msg}", "ERROR")
+        self.logger.log(f"自动弹琴错误: {error_msg}", "ERROR")
         messagebox.showerror("自动弹琴失败", error_msg)
     
     def start_auto_play_midi(self):
@@ -1672,7 +1739,7 @@ class Py312AutoPiano:
         self.is_auto_playing = True
         self.auto_play_button.config(text="停止弹琴")
         self.status_var.set("自动弹琴中... (MIDI模式)")
-        self.log("开始自动弹琴 (MIDI模式)", "INFO")
+        self.logger.log("开始自动弹琴 (MIDI模式)", "INFO")
         
         # 在新线程中执行自动弹琴
         self.auto_play_thread = threading.Thread(target=self._auto_play_midi_thread)
@@ -1925,7 +1992,7 @@ class Py312AutoPiano:
         total_time = self.score_events[-1].end if self.score_events else 0
         
         self.score_info_var.set(f"乐谱信息: 共 {total_events} 个事件，包含 {total_notes} 个音符，总时长 {total_time:.2f} 秒")
-        self.log(f"乐谱文件分析完成: 共 {total_events} 个事件，包含 {total_notes} 个音符，总时长 {total_time:.2f} 秒", "INFO")
+        self.logger.log(f"乐谱文件分析完成: 共 {total_events} 个事件，包含 {total_notes} 个音符，总时长 {total_time:.2f} 秒", "INFO")
     
     def on_closing(self):
         """关闭程序时的处理"""
@@ -1966,8 +2033,8 @@ class Py312AutoPiano:
     
     def run(self):
         """运行程序"""
-        self.log("MeowField_AutoPiano启动成功", "SUCCESS")
-        self.log("支持功能: MP3转MIDI、MIDI播放、自动弹琴、批量转换", "INFO")
+        self.logger.log("MeowField_AutoPiano启动成功", "SUCCESS")
+        self.logger.log("支持功能: MP3转MIDI、MIDI播放、自动弹琴、批量转换", "INFO")
         self.root.mainloop()
 
     def add_to_playlist(self):
@@ -2027,10 +2094,10 @@ class Py312AutoPiano:
             
             self.playlist_items.append(item)
             self._update_playlist_display()
-            self.log(f"已添加到播放列表: {file_name}", "INFO")
+            self.logger.log(f"已添加到播放列表: {file_name}", "INFO")
             
         except Exception as e:
-            self.log(f"添加文件到播放列表失败: {str(e)}", "ERROR")
+            self.logger.log(f"添加文件到播放列表失败: {str(e)}", "ERROR")
     
     def remove_from_playlist(self):
         """从播放列表中移除选中的项目"""
@@ -2044,7 +2111,7 @@ class Py312AutoPiano:
             index = int(item['values'][0]) - 1
             if 0 <= index < len(self.playlist_items):
                 removed_item = self.playlist_items.pop(index)
-                self.log(f"已从播放列表移除: {removed_item['name']}", "INFO")
+                self.logger.log(f"已从播放列表移除: {removed_item['name']}", "INFO")
         
         self._update_playlist_display()
     
@@ -2054,7 +2121,7 @@ class Py312AutoPiano:
             self.playlist_items.clear()
             self.current_playlist_index = -1
             self._update_playlist_display()
-            self.log("播放列表已清空", "INFO")
+            self.logger.log("播放列表已清空", "INFO")
     
     def save_playlist(self):
         """保存播放列表到文件"""
@@ -2075,10 +2142,10 @@ class Py312AutoPiano:
                         f.write(f"#EXTINF:-1,{item['name']}\n")
                         f.write(f"{item['path']}\n")
                 
-                self.log(f"播放列表已保存到: {filename}", "SUCCESS")
+                self.logger.log(f"播放列表已保存到: {filename}", "SUCCESS")
                 messagebox.showinfo("成功", f"播放列表已保存到:\n{filename}")
             except Exception as e:
-                self.log(f"保存播放列表失败: {str(e)}", "ERROR")
+                self.logger.log(f"保存播放列表失败: {str(e)}", "ERROR")
     
     def load_playlist(self):
         """从文件加载播放列表"""
@@ -2105,10 +2172,10 @@ class Py312AutoPiano:
                 
                 self.current_playlist_index = -1
                 self._update_playlist_display()
-                self.log(f"播放列表已从文件加载: {filename}", "SUCCESS")
+                self.logger.log(f"播放列表已从文件加载: {filename}", "SUCCESS")
                 
             except Exception as e:
-                self.log(f"加载播放列表失败: {str(e)}", "ERROR")
+                self.logger.log(f"加载播放列表失败: {str(e)}", "ERROR")
     
     def _update_playlist_display(self):
         """更新播放列表显示"""
@@ -2160,14 +2227,14 @@ class Py312AutoPiano:
                 self.score_events = parse_score(score_text)
                 self.score_path_var.set(file_path)
                 self.analyze_score_file()
-                self.log(f"已加载乐谱: {item['name']}", "SUCCESS")
+                self.logger.log(f"已加载乐谱: {item['name']}", "SUCCESS")
                 
             elif file_ext in ['.mid', '.midi']:
                 # 加载MIDI文件
                 self.midi_file = file_path
                 self.midi_path_var.set(file_path)
                 self.analyze_midi_file(file_path)
-                self.log(f"已加载MIDI: {item['name']}", "SUCCESS")
+                self.logger.log(f"已加载MIDI: {item['name']}", "SUCCESS")
                 
             elif file_ext in ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg']:
                 # 音频文件，询问是否转换
@@ -2184,7 +2251,7 @@ class Py312AutoPiano:
             self.start_auto_play()
             
         except Exception as e:
-            self.log(f"播放列表项目加载失败: {str(e)}", "ERROR")
+            self.logger.log(f"播放列表项目加载失败: {str(e)}", "ERROR")
     
     def play_previous(self):
         """播放上一首"""
@@ -2210,18 +2277,18 @@ class Py312AutoPiano:
         """切换随机播放"""
         self.random_play = not self.random_play
         status = "开启" if self.random_play else "关闭"
-        self.log(f"随机播放已{status}", "INFO")
+        self.logger.log(f"随机播放已{status}", "INFO")
     
     def toggle_loop_play(self):
         """切换循环播放"""
         self.loop_play = not self.loop_play
         status = "开启" if self.loop_play else "关闭"
-        self.log(f"循环播放已{status}", "INFO")
+        self.logger.log(f"循环播放已{status}", "INFO")
 
     def convert_midi_to_lrcp(self, midi_path):
         """将MIDI文件转换为LRCp格式"""
         try:
-            self.log("开始转换MIDI到LRCp格式...", "INFO")
+            self.logger.log("开始转换MIDI到LRCp格式...", "INFO")
             self.status_var.set("正在转换MIDI...")
             
             # 在新线程中执行转换
@@ -2230,7 +2297,7 @@ class Py312AutoPiano:
             convert_thread.start()
             
         except Exception as e:
-            self.log(f"转换失败: {str(e)}", "ERROR")
+            self.logger.log(f"转换失败: {str(e)}", "ERROR")
     
     def _convert_midi_thread(self, midi_path):
         """在后台线程中转换MIDI - 使用改进的解析方法"""
@@ -2241,7 +2308,7 @@ class Py312AutoPiano:
                 self._convert_with_pretty_midi(midi_path)
                 return
             except ImportError:
-                self.log("pretty_midi库不可用，使用mido库", "INFO")
+                self.logger.log("pretty_midi库不可用，使用mido库", "INFO")
                 self._convert_with_mido(midi_path)
                 
         except Exception as e:
@@ -2446,7 +2513,7 @@ class Py312AutoPiano:
     
     def _midi_conversion_complete(self, lrcp_path, events):
         """MIDI转换完成处理"""
-        self.log(f"MIDI转换完成: {lrcp_path}", "SUCCESS")
+        self.logger.log(f"MIDI转换完成: {lrcp_path}", "SUCCESS")
         self.status_var.set("MIDI转换完成")
         
         # 自动加载转换后的LRCp文件并加入自动演奏列表
@@ -2460,12 +2527,12 @@ class Py312AutoPiano:
             self._add_file_to_playlist(lrcp_path)
             
         except Exception as e:
-            self.log(f"自动加载LRCp文件失败: {str(e)}", "ERROR")
+            self.logger.log(f"自动加载LRCp文件失败: {str(e)}", "ERROR")
 
     def check_pianotrans(self):
         """检查PianoTrans配置和模型文件"""
         try:
-            self.log("开始检查PianoTrans配置...", "INFO")
+            self.logger.log("开始检查PianoTrans配置...", "INFO")
             
             # 检查PianoTrans.exe
             piano_trans_paths = [
@@ -2481,11 +2548,11 @@ class Py312AutoPiano:
                 if os.path.exists(path):
                     piano_trans_found = True
                     piano_trans_path = os.path.abspath(path)
-                    self.log(f"✓ 找到PianoTrans.exe: {piano_trans_path}", "SUCCESS")
+                    self.logger.log(f"✓ 找到PianoTrans.exe: {piano_trans_path}", "SUCCESS")
                     break
             
             if not piano_trans_found:
-                self.log("❌ 未找到PianoTrans.exe", "ERROR")
+                self.logger.log("❌ 未找到PianoTrans.exe", "ERROR")
                 messagebox.showerror("检查结果", "未找到PianoTrans.exe，请确保PianoTrans-v1.0文件夹存在")
                 return
             
@@ -2506,7 +2573,7 @@ class Py312AutoPiano:
                 if os.path.exists(path):
                     model_found = True
                     model_path = os.path.abspath(path)
-                    self.log(f"✓ 找到模型文件: {model_path}", "SUCCESS")
+                    self.logger.log(f"✓ 找到模型文件: {model_path}", "SUCCESS")
                     break
             
             if not model_found:
@@ -2516,11 +2583,11 @@ class Py312AutoPiano:
                     if model_file in files:
                         model_found = True
                         model_path = os.path.abspath(os.path.join(root, model_file))
-                        self.log(f"✓ 搜索到模型文件: {model_path}", "SUCCESS")
+                        self.logger.log(f"✓ 搜索到模型文件: {model_path}", "SUCCESS")
                         break
             
             if not model_found:
-                self.log("❌ 未找到模型文件", "ERROR")
+                self.logger.log("❌ 未找到模型文件", "ERROR")
                 
                 # 显示详细的检查结果
                 check_result = f"""PianoTrans检查结果:
@@ -2545,29 +2612,29 @@ class Py312AutoPiano:
             try:
                 model_size = os.path.getsize(model_path)
                 model_size_mb = model_size / (1024 * 1024)
-                self.log(f"模型文件大小: {model_size_mb:.1f} MB", "INFO")
+                self.logger.log(f"模型文件大小: {model_size_mb:.1f} MB", "INFO")
                 
                 if model_size_mb < 100:
-                    self.log("⚠️ 模型文件可能不完整（小于100MB）", "WARNING")
+                    self.logger.log("⚠️ 模型文件可能不完整（小于100MB）", "WARNING")
             except:
                 pass
             
             # 检查目录结构
             piano_trans_dir = os.path.dirname(piano_trans_path)
-            self.log(f"PianoTrans目录: {piano_trans_dir}", "INFO")
+            self.logger.log(f"PianoTrans目录: {piano_trans_dir}", "INFO")
             
             try:
                 for root, dirs, files in os.walk(piano_trans_dir):
                     level = root.replace(piano_trans_dir, '').count(os.sep)
                     indent = ' ' * 2 * level
-                    self.log(f"{indent}{os.path.basename(root)}/", "INFO")
+                    self.logger.log(f"{indent}{os.path.basename(root)}/", "INFO")
                     subindent = ' ' * 2 * (level + 1)
                     for file in files[:10]:  # 只显示前10个文件
-                        self.log(f"{subindent}{file}", "INFO")
+                        self.logger.log(f"{subindent}{file}", "INFO")
                     if len(files) > 10:
-                        self.log(f"{subindent}... 还有 {len(files) - 10} 个文件", "INFO")
+                        self.logger.log(f"{subindent}... 还有 {len(files) - 10} 个文件", "INFO")
             except Exception as e:
-                self.log(f"遍历目录失败: {str(e)}", "WARNING")
+                self.logger.log(f"遍历目录失败: {str(e)}", "WARNING")
             
             # 显示成功结果
             success_msg = f"""PianoTrans检查完成！
@@ -2579,23 +2646,23 @@ class Py312AutoPiano:
 注意：首次使用需要等待模型加载（约165MB）"""
             
             messagebox.showinfo("检查结果", success_msg)
-            self.log("PianoTrans检查完成，配置正常", "SUCCESS")
+            self.logger.log("PianoTrans检查完成，配置正常", "SUCCESS")
             
         except Exception as e:
             error_msg = f"检查PianoTrans时发生错误: {str(e)}"
-            self.log(error_msg, "ERROR")
+            self.logger.log(error_msg, "ERROR")
             messagebox.showerror("检查失败", error_msg)
 
     def fix_pianotrans_paths(self):
         """修复PianoTrans路径问题"""
         try:
-            self.log("开始修复PianoTrans路径...", "INFO")
+            self.logger.log("开始修复PianoTrans路径...", "INFO")
             
             # 导入路径修复工具
             try:
                 from fix_pianotrans_paths import PianoTransPathFixer
             except ImportError:
-                self.log("路径修复工具未找到，请确保fix_pianotrans_paths.py存在", "ERROR")
+                self.logger.log("路径修复工具未找到，请确保fix_pianotrans_paths.py存在", "ERROR")
                 return
             
             # 在新线程中执行修复
@@ -2607,13 +2674,13 @@ class Py312AutoPiano:
                     self.root.after(0, lambda: self._path_fix_complete(fixed_count, total_count))
                     
                 except Exception as e:
-                    self.root.after(0, lambda: self.log(f"路径修复失败: {str(e)}", "ERROR"))
+                    self.root.after(0, lambda: self.logger.log(f"路径修复失败: {str(e)}", "ERROR"))
             
             thread = threading.Thread(target=fix_thread, daemon=True)
             thread.start()
             
         except Exception as e:
-            self.log(f"启动路径修复失败: {str(e)}", "ERROR")
+            self.logger.log(f"启动路径修复失败: {str(e)}", "ERROR")
     
     def _path_fix_complete(self, fixed_count, total_count):
         """路径修复完成处理"""
@@ -2622,10 +2689,10 @@ class Py312AutoPiano:
                               f"路径修复完成！\n修复了 {fixed_count}/{total_count} 个文件\n\n"
                               f"备份文件保存在 pianotrans_backups 目录中\n"
                               f"如需恢复，请运行: python fix_pianotrans_paths.py --restore")
-            self.log(f"路径修复完成: {fixed_count}/{total_count} 个文件", "SUCCESS")
+            self.logger.log(f"路径修复完成: {fixed_count}/{total_count} 个文件", "SUCCESS")
         else:
             messagebox.showinfo("修复完成", "未发现需要修复的路径问题")
-            self.log("未发现需要修复的路径问题", "INFO")
+            self.logger.log("未发现需要修复的路径问题", "INFO")
 
     # ===== 追加：映射与时间分组辅助方法（空格缩进版本） =====
     def _token_from_midi_note(self, midi_note: int) -> Optional[str]:
@@ -2790,7 +2857,7 @@ class Py312AutoPiano:
             # 记录当前主题来源
             try:
                 src = "ttkbootstrap" if tb else "system ttk"
-                self.log(f"外观初始化完成（{src}）", "INFO")
+                self.logger.log(f"外观初始化完成（{src}）", "INFO")
             except Exception:
                 pass
         except Exception:
@@ -2860,11 +2927,11 @@ class Py312AutoPiano:
             # 同步 theme_mode（根据名称粗略判断）
             dark_set = {"darkly", "superhero", "cyborg", "solar"}
             self.config["ui"]["theme_mode"] = "dark" if theme_name in dark_set else "light"
-            self.log(f"主题已切换为: {theme_name}", "INFO")
+            self.logger.log(f"主题已切换为: {theme_name}", "INFO")
             # 主题改变后同步更新控件外观
             self._apply_appearance_to_widgets()
         except Exception as e:
-            self.log(f"切换主题失败: {e}", "WARNING")
+            self.logger.log(f"切换主题失败: {e}", "WARNING")
 
     def _apply_density(self, density: str):
         """应用密度：调整控件行高与 padding。"""
@@ -3008,10 +3075,10 @@ class Py312AutoPiano:
         self.is_auto_paused = not self.is_auto_paused
         if self.is_auto_paused:
             self.status_var.set("自动弹琴已暂停")
-            self.log("自动弹琴已暂停", "INFO")
+            self.logger.log("自动弹琴已暂停", "INFO")
         else:
             self.status_var.set("自动弹琴继续…")
-            self.log("自动弹琴继续", "INFO")
+            self.logger.log("自动弹琴继续", "INFO")
 
 def main():
     """主函数"""
