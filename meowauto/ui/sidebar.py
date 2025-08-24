@@ -23,21 +23,26 @@ class Sidebar:
         if ToolTip:
             ToolTip(self._toggle_btn, text="折叠/展开侧边栏")
 
-        # 菜单按钮（使用文字代替图标）
+        # 游戏区域
+        game_label = ttk.Label(self._container, text="游戏", anchor=tk.W)
+        game_label.pack(padx=6, pady=(4, 0), fill=tk.X)
+        self._game_buttons = []
+        btn_default = ttk.Button(self._container, text="开放空间", width=12, command=lambda: self.on_action("game-default"))
+        btn_default.pack(padx=6, pady=4, fill=tk.X)
+        self._game_buttons.append(btn_default)
+        btn_ys = ttk.Button(self._container, text="原神", width=12, command=lambda: self.on_action("game-yuanshen"))
+        btn_ys.pack(padx=6, pady=0, fill=tk.X)
+        self._game_buttons.append(btn_ys)
+
+        ttk.Separator(self._container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 4))
+
+        # 仅保留“关于”按钮
         self._buttons = []
-        for key, text, tip in [
-            ("files", "文件", "打开音频/加载资源"),
-            ("playlist", "列表", "管理自动演奏列表"),
-            ("convert", "转换", "音频转MIDI / MIDI转LRCp"),
-            ("auto", "自动", "开始/停止自动弹琴"),
-            ("settings", "设置", "外观与偏好"),
-            ("help", "帮助", "查看帮助")
-        ]:
-            b = ttk.Button(self._container, text=text, width=12, command=lambda k=key: self.on_action(k))
-            b.pack(padx=6, pady=4, fill=tk.X)
-            if ToolTip:
-                ToolTip(b, text=tip)
-            self._buttons.append(b)
+        about_btn = ttk.Button(self._container, text="关于", width=12, command=lambda: self.on_action("about"))
+        about_btn.pack(padx=6, pady=4, fill=tk.X)
+        if ToolTip:
+            ToolTip(about_btn, text="查看项目说明")
+        self._buttons.append(about_btn)
 
         # 初始宽度
         self.frame.update_idletasks()
@@ -51,9 +56,13 @@ class Sidebar:
         if self._collapsed:
             for b in self._buttons:
                 b.pack_forget()
+            for b in getattr(self, '_game_buttons', []):
+                b.pack_forget()
             self.frame.configure(width=40)
         else:
+            for b in getattr(self, '_game_buttons', []):
+                b.pack(padx=6, pady=4, fill=tk.X)
             for b in self._buttons:
                 b.pack(padx=6, pady=4, fill=tk.X)
             self.frame.configure(width=self._expanded_width)
-        self.frame.update_idletasks() 
+        self.frame.update_idletasks()

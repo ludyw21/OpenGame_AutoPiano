@@ -79,8 +79,9 @@ class UIManager:
         
         # 标题
         title_font = ("Microsoft YaHei", 18, "bold")
-        title_label = ttk.Label(title_frame, text="🎹 MeowField AutoPiano v1.0.2", font=title_font)
-        title_label.pack(side=tk.LEFT)
+        self._base_title = "🎹 MeowField AutoPiano v1.0.3"
+        self.title_label = ttk.Label(title_frame, text=self._base_title, font=title_font)
+        self.title_label.pack(side=tk.LEFT)
         
         # 外观控制
         self._create_appearance_controls(title_frame)
@@ -170,6 +171,17 @@ class UIManager:
             relief=tk.SUNKEN
         )
         status_bar.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+
+    def set_title_suffix(self, suffix: str | None):
+        """设置标题后缀（例如当前游戏名）"""
+        try:
+            text = self._base_title
+            if suffix:
+                text = f"{text} [{suffix}]"
+            if hasattr(self, 'title_label'):
+                self.title_label.configure(text=text)
+        except Exception:
+            pass
     
     def _bind_window_events(self):
         """绑定窗口事件"""
