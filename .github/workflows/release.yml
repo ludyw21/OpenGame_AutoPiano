@@ -15,58 +15,44 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute next tag (auto-increment: 1.0.9 -> 1.1.0)
+      - name: Compute next tag
         id: ver
         shell: pwsh
         run: |
           git fetch --tags --force
           $tags = git tag --list 'V*'
           if (-not $tags) {
-            $major = 1
-            $minor = 0
-            $patch = 1
+            $major = 1; $minor = 0; $patch = 1
           } else {
             $vers = @()
             foreach ($t in $tags) {
               $s = $t.TrimStart('V')
-              try { 
-                $vers += [version]$s 
-              } catch {}
+              try { $vers += [version]$s } catch {}
             }
             if (-not $vers) { 
-              $major = 1
-              $minor = 0
-              $patch = 1
+              $major = 1; $minor = 0; $patch = 1 
             } else {
               $latest = $vers | Sort-Object -Descending | Select-Object -First 1
-              $major = $latest.Major
-              $minor = $latest.Minor
-              $patch = $latest.Build
+              $major = $latest.Major; $minor = $latest.Minor; $patch = $latest.Build
               $patch++
-              if ($patch -ge 10) { 
-                $patch = 0
-                $minor++
-              }
-              if ($minor -ge 10) { 
-                $minor = 0
-                $major++
-              }
+              if ($patch -ge 10) { $patch = 0; $minor++ }
+              if ($minor -ge 10) { $minor = 0; $major++ }
             }
           }
           $next = "{0}.{1}.{2}" -f $major, $minor, $patch
           "tag=V$next" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "name=V$next" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Next tag computed: V$next"
+          Write-Host "Next tag: V$next"
 
       - name: Verify artifacts exist
         shell: pwsh
         run: |
           if (!(Test-Path "dist/MeowField_AutoPiano")) {
-            Write-Error "dist/MeowField_AutoPiano not found. Please build locally before running this workflow.";
+            Write-Error "dist/MeowField_AutoPiano not found. Please build locally first."
             exit 1
           }
 
-      - name: Prepare zip artifact (only dist/MeowField_AutoPiano)
+      - name: Prepare zip artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifact -Force | Out-Null
@@ -79,9 +65,9 @@ jobs:
           name: ${{ steps.ver.outputs.name }}
           body: |
             MeowField_AutoPiano Release (Windows)
-
+            
             Assets:
-            - MeowField_AutoPiano.zip (contents of dist/MeowField_AutoPiano)
+            - MeowField_AutoPiano.zip
             - MeowField_AutoPiano.exe
           draft: false
           prerelease: false
