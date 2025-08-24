@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['auto_piano_py312.py'],
+    ['start.py'],
     pathex=[],
     binaries=[],
     datas=[('README.md', '.')],
