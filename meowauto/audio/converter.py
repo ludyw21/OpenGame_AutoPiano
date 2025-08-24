@@ -30,19 +30,33 @@ class AudioConverter:
         """初始化各种转换器"""
         # 尝试导入新的音频转换器
         try:
+            import sys
+            import os
+            # Add the parent directory to sys.path to import from root
+            parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+            
             from audio_to_midi_converter import AudioToMidiConverter
             self.new_converter = AudioToMidiConverter(self.logger.log)
             self.logger.log("新音频转换器已加载", "SUCCESS")
-        except ImportError:
-            self.logger.log("新音频转换器未加载", "WARNING")
+        except ImportError as e:
+            self.logger.log(f"新音频转换器未加载: {str(e)}", "WARNING")
         
         # 尝试导入PianoTrans配置器
         try:
+            import sys
+            import os
+            # Add the parent directory to sys.path to import from root
+            parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+            
             from pianotrans_config import PianoTransConfig
             self.pianotrans_config = PianoTransConfig(self.logger.log)
             self.logger.log("PianoTrans配置器已加载", "SUCCESS")
-        except ImportError:
-            self.logger.log("PianoTrans配置器未加载", "WARNING")
+        except ImportError as e:
+            self.logger.log(f"PianoTrans配置器未加载: {str(e)}", "WARNING")
     
     def convert_audio_to_midi(self, audio_path: str, output_path: str = None) -> bool:
         """转换音频文件到MIDI"""
