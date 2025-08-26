@@ -18,6 +18,8 @@ from ui_manager import UIManager
 from meowauto.midi import analyzer, groups
 from meowauto.ui.sidebar import Sidebar
 from meowauto.ui.yuanshen import YuanShenPage
+from meowauto.config.key_mapping_manager import KeyMappingManager
+from meowauto.ui.keymap_editor import KeymapEditor
 
 
 class MeowFieldAutoPiano:
@@ -27,7 +29,7 @@ class MeowFieldAutoPiano:
         """初始化应用程序"""
         # 创建主窗口
         self.root = tk.Tk()
-        self.root.title("MeowField AutoPiano v1.0.3")
+        self.root.title("MeowField AutoPiano v1.0.4")
         self.root.geometry("1600x980")
         self.root.resizable(True, True)
         
@@ -42,7 +44,7 @@ class MeowFieldAutoPiano:
         
         # 初始化UI管理器
         self.ui_manager = UIManager(self.root, self.event_bus)
-        self.current_game = "默认"
+        self.current_game = "开放空间"
         self.yuanshen_page = None
         self.sidebar_win = None
         
@@ -54,8 +56,13 @@ class MeowFieldAutoPiano:
         
         # 创建UI组件
         self._create_ui_components()
-        # 创建并对接侧边栏
+        # 创建并对接侧边栏（默认展开，保持可见）
         self._create_sidebar_window()
+        # 键位映射管理器
+        try:
+            self.keymap_manager = KeyMappingManager()
+        except Exception:
+            self.keymap_manager = None
         
         # 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -63,8 +70,13 @@ class MeowFieldAutoPiano:
         # 绑定热键
         self._bind_hotkeys()
         
+        # 默认切换到“开放空间”页面，确保主界面与设置保持
+        try:
+            self._switch_game('开放空间')
+        except Exception:
+            pass
         # 发布系统就绪事件
-        self.event_bus.publish(Events.SYSTEM_READY, {'version': '1.0.3'}, 'App')
+        self.event_bus.publish(Events.SYSTEM_READY, {'version': '1.0.4'}, 'App')
         # 初始化标题后缀
         self._update_titles_suffix(self.current_game)
     
@@ -243,8 +255,13 @@ class MeowFieldAutoPiano:
             container.pack(fill=tk.BOTH, expand=True)
             self.sidebar = Sidebar(container, on_action=self._on_sidebar_action, width=self.sidebar_width_expanded)
             self.sidebar.attach(row=0, column=0)
-            # 默认折叠
-            self.sidebar.toggle()
+            # 默认收起
+            try:
+                if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'toggle'):
+                    self.sidebar.toggle()
+                    self.sidebar_current_width = self.sidebar_width_collapsed
+            except Exception:
+                pass
             # 跟随主窗体移动/缩放（不覆盖已有绑定）
             try:
                 self.root.bind('<Configure>', self._on_root_configure, add="+")
@@ -252,6 +269,13 @@ class MeowFieldAutoPiano:
                 # 兼容不支持 add 参数的实现，退而求其次：直接绑定
                 self.root.bind('<Configure>', self._on_root_configure)
             self.sidebar.frame.bind('<Configure>', self._on_sidebar_configure)
+            # 同步最小化/恢复状态
+            try:
+                self.root.bind('<Unmap>', self._on_root_unmap, add="+")
+                self.root.bind('<Map>', self._on_root_map, add="+")
+            except TypeError:
+                self.root.bind('<Unmap>', self._on_root_unmap)
+                self.root.bind('<Map>', self._on_root_map)
             self._position_sidebar()
         except Exception as e:
             self._log_message(f"创建侧边栏失败: {e}", "ERROR")
@@ -279,6 +303,23 @@ class MeowFieldAutoPiano:
         except Exception:
             pass
 
+    def _on_root_unmap(self, event=None):
+        """主窗体最小化/隐藏时，同步隐藏侧边栏"""
+        try:
+            if self.sidebar_win and self.sidebar_win.winfo_exists():
+                self.sidebar_win.withdraw()
+        except Exception:
+            pass
+
+    def _on_root_map(self, event=None):
+        """主窗体恢复显示时，同步显示侧边栏并重定位"""
+        try:
+            if self.sidebar_win and self.sidebar_win.winfo_exists():
+                self.sidebar_win.deiconify()
+                self._position_sidebar()
+        except Exception:
+            pass
+
     def _on_sidebar_action(self, key: str):
         """侧边栏按钮回调"""
         try:
@@ -286,6 +327,13 @@ class MeowFieldAutoPiano:
                 self._switch_game('开放空间')
             elif key == 'game-yuanshen':
                 self._switch_game('原神')
+            elif key == 'keymap':
+                try:
+                    if self.keymap_manager is None:
+                        self.keymap_manager = KeyMappingManager()
+                    KeymapEditor(self.root, self.keymap_manager)
+                except Exception as e:
+                    self._log_message(f"打开键位映射编辑器失败: {e}", "ERROR")
             elif key == 'about':
                 self._show_about()
             # 其他功能键可在此扩展
@@ -322,6 +370,13 @@ class MeowFieldAutoPiano:
                         self.yuanshen_page.frame.pack_forget()
                     except Exception:
                         pass
+            # 确保侧边栏可见并重定位
+            try:
+                if self.sidebar_win and self.sidebar_win.winfo_exists():
+                    self.sidebar_win.deiconify()
+                    self._position_sidebar()
+            except Exception:
+                pass
             # 更新标题
             self._update_titles_suffix(self.current_game)
         except Exception as e:
@@ -362,7 +417,7 @@ class MeowFieldAutoPiano:
             if hasattr(self, 'ui_manager') and hasattr(self.ui_manager, 'set_title_suffix'):
                 self.ui_manager.set_title_suffix(suffix)
             # 同步根窗口标题
-            base = "MeowField AutoPiano v1.0.3"
+            base = "MeowField AutoPiano v1.0.4"
             self.root.title(f"{base} [{suffix}]") if suffix else self.root.title(base)
         except Exception:
             pass
@@ -388,12 +443,7 @@ class MeowFieldAutoPiano:
             midi_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 10), pady=(5, 0))
             ttk.Button(file_frame, text="浏览", command=self._browse_midi).grid(row=1, column=2, pady=(5, 0))
             
-            # 乐谱文件选择
-            ttk.Label(file_frame, text="乐谱文件:").grid(row=2, column=0, sticky=tk.W, padx=(0, 10), pady=(5, 0))
-            self.score_path_var = tk.StringVar()
-            score_entry = ttk.Entry(file_frame, textvariable=self.score_path_var, width=50)
-            score_entry.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(0, 10), pady=(5, 0))
-            ttk.Button(file_frame, text="浏览", command=self._browse_score).grid(row=2, column=2, pady=(5, 0))
+            # 已移除：乐谱文件（LRCp）选择
             
             # 转换按钮
             convert_frame = ttk.Frame(file_frame)
@@ -401,10 +451,9 @@ class MeowFieldAutoPiano:
             
             ttk.Button(convert_frame, text="音频转MIDI", 
                       command=self._convert_mp3_to_midi).pack(side=tk.LEFT, padx=(0, 10))
-            ttk.Button(convert_frame, text="MIDI转LRCp", 
-                      command=self._convert_midi_to_lrcp).pack(side=tk.LEFT, padx=(0, 10))
+            # 已移除：MIDI转LRCp
             ttk.Button(convert_frame, text="批量转换", 
-                      command=self._batch_convert).pack(side=tk.LEFT)
+                      command=self._batch_convert).pack(side=tk.LEFT, padx=(0, 10))
             
             # 配置网格权重
             file_frame.columnconfigure(1, weight=1)
@@ -443,8 +492,6 @@ class MeowFieldAutoPiano:
             self.playback_mode = tk.StringVar(value="midi")
             midi_radio = ttk.Radiobutton(mode_frame, text="MIDI模式", variable=self.playback_mode, value="midi", command=self._on_mode_changed)
             midi_radio.pack(side=tk.LEFT, padx=(0, 10))
-            lrcp_radio = ttk.Radiobutton(mode_frame, text="LRCp模式", variable=self.playback_mode, value="lrcp", command=self._on_mode_changed)
-            lrcp_radio.pack(side=tk.LEFT, padx=(0, 10))
 
             button_frame = ttk.Frame(tab_controls)
             button_frame.pack(side=tk.TOP, anchor=tk.W)
@@ -463,7 +510,7 @@ class MeowFieldAutoPiano:
 
             # ——— 参数页 ———
             param_frame = ttk.Frame(tab_params)
-            param_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+            param_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
             ttk.Label(param_frame, text="速度:").pack(anchor=tk.W)
             self.tempo_var = tk.DoubleVar(value=1.0)
             # 使用离散速度选项替代连续滑块
@@ -485,6 +532,8 @@ class MeowFieldAutoPiano:
             volume_scale.pack(fill=tk.X)
             self.debug_var = tk.BooleanVar(value=False)
             ttk.Checkbutton(param_frame, text="调试模式", variable=self.debug_var, command=self._on_debug_toggle).pack(anchor=tk.W, pady=(10, 0))
+            # 播放回调开关：关闭后将不再发出 on_progress/on_complete 等回调到UI，适合低性能模式
+            # 进度回调始终启用（移除回调开关避免混淆）
 
             # 移除：“高级”标签页（和弦与调度选项改由右侧或使用默认）
 
@@ -506,12 +555,13 @@ class MeowFieldAutoPiano:
             playlist_toolbar = ttk.Frame(playlist_container)
             playlist_toolbar.pack(fill=tk.X, pady=(0, 5))
             ttk.Button(playlist_toolbar, text="添加文件", command=self._add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(playlist_toolbar, text="添加文件夹", command=self._add_folder_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
             ttk.Button(playlist_toolbar, text="移除选中", command=self._remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
             ttk.Button(playlist_toolbar, text="清空列表", command=self._clear_playlist).pack(side=tk.LEFT)
             ttk.Label(playlist_toolbar, text="播放顺序:").pack(side=tk.LEFT, padx=(12, 4))
             self.playlist_order_var = tk.StringVar(value="顺序")
             ttk.Combobox(playlist_toolbar, textvariable=self.playlist_order_var, state="readonly", width=10,
-                         values=["顺序", "随机", "单曲循环"]).pack(side=tk.LEFT)
+                         values=["顺序", "随机", "单曲循环", "列表循环"]).pack(side=tk.LEFT)
 
             # 播放列表显示区域
             playlist_display = ttk.Frame(playlist_container)
@@ -537,9 +587,8 @@ class MeowFieldAutoPiano:
                 "• Ctrl+Shift+C: 暂停演奏\n\n"
                 "使用说明:\n"
                 "1. 选择音频文件 → 点击\"音频转MIDI\"进行转换\n"
-                "2. 选择MIDI文件 → 点击\"MIDI转LRCp\"生成乐谱\n"
-                "3. 设置演奏模式和参数\n"
-                "4. 点击\"自动弹琴\"开始演奏\n"
+                "2. 选择MIDI文件，设置参数\n"
+                "3. 点击\"自动弹琴\"开始演奏\n"
                 "5. 遇到报错不要慌，有点bug是正常的（），启动时控制台那一堆报错不用管，\n遇到其它问题请提issue或者去q群反馈，带好截图和问题描述\n\n"
                 "注意: 新版本不自带PianoTrans（音频转换模型），需要单独下载"
             )
@@ -605,6 +654,12 @@ class MeowFieldAutoPiano:
     def _create_right_pane(self):
         """创建右侧分页：MIDI解析设置 / 事件表 / 系统日志"""
         try:
+            # 顶部工具栏（醒目的解析按钮）
+            top_toolbar = ttk.Frame(self.ui_manager.right_frame)
+            top_toolbar.pack(fill=tk.X, pady=(0, 6))
+            parse_btn = ttk.Button(top_toolbar, text="解析当前MIDI", command=self._analyze_current_midi, style=self.ui_manager.accent_button_style)
+            parse_btn.pack(side=tk.LEFT, padx=6, pady=4)
+
             notebook = ttk.Notebook(self.ui_manager.right_frame)
             notebook.pack(fill=tk.BOTH, expand=True)
 
@@ -704,6 +759,20 @@ class MeowFieldAutoPiano:
             self.melody_rep_penalty_var = tk.DoubleVar(value=1.0)
             ttk.Spinbox(mel_frame, from_=0.0, to=5.0, increment=0.1, textvariable=self.melody_rep_penalty_var, width=8).grid(row=5, column=1, sticky=tk.W)
 
+            # Pre-processing controls (before analysis)
+            pre_frame = ttk.LabelFrame(settings_inner, text="预处理(解析前)", padding="8")
+            pre_frame.pack(fill=tk.X, padx=6, pady=(6,6))
+            self.enable_preproc_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(pre_frame, text="启用预处理(整曲移调以提升白键占比)", variable=self.enable_preproc_var).grid(row=0, column=0, columnspan=3, sticky=tk.W)
+            ttk.Label(pre_frame, text="移调(半音):").grid(row=1, column=0, sticky=tk.W, pady=(6,0))
+            self.pretranspose_semitones_var = tk.IntVar(value=0)
+            ttk.Spinbox(pre_frame, from_=-11, to=11, increment=1, textvariable=self.pretranspose_semitones_var, width=8).grid(row=1, column=1, sticky=tk.W, pady=(6,0))
+            self.pretranspose_auto_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(pre_frame, text="自动选择白键占比最高", variable=self.pretranspose_auto_var).grid(row=1, column=2, sticky=tk.W, padx=(12,0), pady=(6,0))
+            ttk.Label(pre_frame, text="白键占比:").grid(row=1, column=3, sticky=tk.W, padx=(12,0), pady=(6,0))
+            self.pretranspose_white_ratio_var = tk.StringVar(value="-")
+            ttk.Label(pre_frame, textvariable=self.pretranspose_white_ratio_var).grid(row=1, column=4, sticky=tk.W, pady=(6,0))
+
             # Post-processing controls
             pp_frame = ttk.LabelFrame(settings_inner, text="后处理(应用于解析结果)", padding="8")
             pp_frame.pack(fill=tk.X, padx=6, pady=6)
@@ -717,9 +786,6 @@ class MeowFieldAutoPiano:
             ttk.Label(pp_frame, text="量化窗口(ms)").grid(row=0, column=3, sticky=tk.W, padx=(12,0))
             self.quantize_window_var = tk.IntVar(value=30)
             ttk.Spinbox(pp_frame, from_=1, to=200, increment=1, textvariable=self.quantize_window_var, width=8).grid(row=0, column=4, sticky=tk.W)
-            ttk.Label(pp_frame, text="BPM").grid(row=0, column=5, sticky=tk.W, padx=(12,0))
-            self.bpm_var = tk.IntVar(value=100)
-            ttk.Spinbox(pp_frame, from_=20, to=300, increment=1, textvariable=self.bpm_var, width=8).grid(row=0, column=6, sticky=tk.W)
             # 高级功能：和弦识别（基于窗口对齐）
             self.enable_chord_var = tk.BooleanVar(value=False)
             ttk.Checkbutton(pp_frame, text="识别和弦(同窗同按计为和弦)", variable=self.enable_chord_var).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(6,0))
@@ -753,10 +819,18 @@ class MeowFieldAutoPiano:
             self.r_chord_min_sustain_var = tk.IntVar(value=1500)
             ttk.Spinbox(chord_frame, from_=0, to=5000, increment=10, textvariable=self.r_chord_min_sustain_var, width=8, command=self._on_player_options_changed).grid(row=2, column=3, sticky=tk.W)
 
-            # Analyze button
-            act_frame = ttk.Frame(settings_inner)
-            act_frame.pack(fill=tk.X, padx=6, pady=(0,6))
-            ttk.Button(act_frame, text="解析当前MIDI", command=self._analyze_current_midi).pack(side=tk.LEFT)
+            # 键位映射策略（回放阶段）：新增“强化回退策略”开关
+            keymap_frame = ttk.LabelFrame(settings_inner, text="键位映射策略", padding="8")
+            keymap_frame.pack(fill=tk.X, padx=6, pady=(0,6))
+            self.r_enable_key_fallback_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(
+                keymap_frame,
+                text="启用强化回退策略(21键映射)",
+                variable=self.r_enable_key_fallback_var,
+                command=self._on_player_options_changed,
+            ).grid(row=0, column=0, sticky=tk.W)
+
+            # 解析按钮移至左侧“文件选择”区域的转换工具栏
 
             # —— 事件表 ——
             ev_toolbar = ttk.Frame(tab_events)
@@ -871,6 +945,28 @@ class MeowFieldAutoPiano:
                 messagebox.showerror("错误", f"解析失败: {res.get('error')}")
                 return
             notes = res.get('notes', [])
+            # 预处理：整曲移调（优先自动选择白键占比最高的移调）
+            if bool(getattr(self, 'enable_preproc_var', tk.BooleanVar(value=False)).get()) and notes:
+                try:
+                    if bool(getattr(self, 'pretranspose_auto_var', tk.BooleanVar(value=True)).get()):
+                        chosen, best_ratio = self._auto_choose_best_transpose(notes)
+                        # 应用自动选择的结果
+                        auto_notes = getattr(self, '_auto_transposed_notes_cache', None)
+                        if auto_notes:
+                            notes = auto_notes
+                        else:
+                            notes = self._transpose_notes(notes, chosen)
+                        self.pretranspose_semitones_var.set(chosen)
+                        self.pretranspose_white_ratio_var.set(f"{best_ratio*100:.1f}%")
+                        self._log_message(f"预处理移调(自动): {chosen} 半音 | 白键占比: {best_ratio*100:.1f}%")
+                    else:
+                        chosen = int(getattr(self, 'pretranspose_semitones_var', tk.IntVar(value=0)).get())
+                        notes = self._transpose_notes(notes, chosen)
+                        ratio = self._white_key_ratio(notes)
+                        self.pretranspose_white_ratio_var.set(f"{ratio*100:.1f}%")
+                        self._log_message(f"预处理移调(手动): {chosen} 半音 | 白键占比: {ratio*100:.1f}%")
+                except Exception as exp:
+                    self._log_message(f"预处理移调失败: {exp}", "WARNING")
             total_before = len(notes)
             self._log_message(f"原始音符数: {total_before}")
             # update channel combo with detected channels
@@ -1163,21 +1259,6 @@ class MeowFieldAutoPiano:
             except Exception as e:
                 self._log_message(f"自动解析MIDI失败: {e}", "ERROR")
     
-    def _browse_score(self):
-        """浏览乐谱文件"""
-        file_path = filedialog.askopenfilename(
-            title="选择乐谱文件 (.lrcp)",
-            filetypes=[("乐谱文件", "*.lrcp"), ("所有文件", "*.*")]
-        )
-        if file_path:
-            self.score_path_var.set(file_path)
-            self._log_message(f"已选择乐谱文件: {file_path}")
-            
-            # 自动切换到LRCp模式
-            self.playback_mode.set("lrcp")
-            self._log_message("已自动切换到LRCp演奏模式", "INFO")
-            self.ui_manager.set_status("LRCp演奏模式")
-    
     def _convert_mp3_to_midi(self):
         """转换音频到MIDI"""
         audio_path = self.mp3_path_var.get()
@@ -1230,52 +1311,6 @@ class MeowFieldAutoPiano:
         except Exception as e:
             self._log_message(f"音频转换异常: {str(e)}", "ERROR")
             messagebox.showerror("错误", f"音频转换过程中发生错误:\n{str(e)}")
-    
-    def _convert_midi_to_lrcp(self):
-        """转换MIDI到LRCp"""
-        midi_path = self.midi_path_var.get()
-        if not midi_path:
-            messagebox.showerror("错误", "请先选择MIDI文件")
-            return
-        
-        if not os.path.exists(midi_path):
-            messagebox.showerror("错误", "MIDI文件不存在")
-            return
-        
-        self._log_message("开始转换MIDI到LRCp...")
-        self.ui_manager.set_status("正在转换...")
-        
-        try:
-            # 尝试使用meowauto模块中的转换功能
-            from meowauto.music import LrcpConverter
-            from meowauto.core import ConfigManager
-            
-            # 创建转换器实例
-            config = ConfigManager()
-            converter = LrcpConverter(config)
-            
-            # 执行转换
-            output_path = os.path.splitext(midi_path)[0] + ".lrcp"
-            success = converter.convert_midi_to_lrcp(midi_path, output_path)
-            
-            if success:
-                self._log_message(f"MIDI转换成功: {output_path}", "SUCCESS")
-                self.ui_manager.set_status("MIDI转换完成")
-                messagebox.showinfo("成功", f"MIDI文件已转换为LRCp格式\n保存位置: {output_path}")
-                
-                # 自动添加到播放列表
-                self._add_file_to_playlist(output_path, "LRCp乐谱")
-            else:
-                self._log_message("MIDI转换失败", "ERROR")
-                self.ui_manager.set_status("MIDI转换失败")
-                messagebox.showerror("错误", "MIDI转换失败，请检查文件格式")
-                
-        except ImportError:
-            self._log_message("MIDI转换模块不可用", "ERROR")
-            messagebox.showerror("错误", "MIDI转换模块不可用，请检查meowauto模块")
-        except Exception as e:
-            self._log_message(f"MIDI转换异常: {str(e)}", "ERROR")
-            messagebox.showerror("错误", f"MIDI转换过程中发生错误:\n{str(e)}")
     
     def _batch_convert(self):
         """批量转换"""
@@ -1379,9 +1414,6 @@ class MeowFieldAutoPiano:
         if mode == "midi":
             self._log_message("已切换到MIDI演奏模式", "INFO")
             self.ui_manager.set_status("MIDI演奏模式")
-        elif mode == "lrcp":
-            self._log_message("已切换到LRCp演奏模式", "INFO")
-            self.ui_manager.set_status("LRCp演奏模式")
     
     def _on_debug_toggle(self):
         """调试模式开关联动 AutoPlayer"""
@@ -1442,6 +1474,8 @@ class MeowFieldAutoPiano:
                     chord_min_sustain_ms = int(self.r_chord_min_sustain_var.get())
                 else:
                     chord_min_sustain_ms = int(self.chord_min_sustain_var.get()) if hasattr(self, 'chord_min_sustain_var') else 120
+                # 键位映射：强化回退策略
+                enable_key_fallback = bool(self.r_enable_key_fallback_var.get()) if hasattr(self, 'r_enable_key_fallback_var') else True
                 self.auto_player.set_options(
                     allow_retrigger=allow_rt,
                     retrigger_min_gap_ms=gap_ms,
@@ -1453,6 +1487,7 @@ class MeowFieldAutoPiano:
                     chord_drop_root=chord_drop_root,
                     chord_mode=chord_mode,
                     chord_min_sustain_ms=chord_min_sustain_ms,
+                    enable_key_fallback=enable_key_fallback,
                     # 预处理选项
                     enable_quantize=bool(self.enable_quantize_var.get()) if hasattr(self, 'enable_quantize_var') else True,
                     quantize_grid_ms=int(self.quantize_grid_var.get()) if hasattr(self, 'quantize_grid_var') else 30,
@@ -1474,140 +1509,22 @@ class MeowFieldAutoPiano:
         except Exception:
             pass
     
-    def _auto_detect_mode(self):
-        """自动检测演奏模式"""
-        # 检查是否有乐谱文件
-        score_path = self.score_path_var.get()
-        if score_path and os.path.exists(score_path):
-            # 有乐谱文件，切换到LRCp模式
-            self.playback_mode.set("lrcp")
-            self._log_message("检测到乐谱文件，自动切换到LRCp模式", "INFO")
-            return "lrcp"
-        
-        # 检查是否有MIDI文件
-        midi_path = self.midi_path_var.get()
-        if midi_path and os.path.exists(midi_path):
-            # 有MIDI文件，切换到MIDI模式
-            self.playback_mode.set("midi")
-            self._log_message("检测到MIDI文件，自动切换到MIDI模式", "INFO")
-            return "midi"
-        
-        # 默认MIDI模式
-        self.playback_mode.set("midi")
-        return "midi"
-    
-    def _pause_midi_play(self):
-        """暂停MIDI播放"""
-        try:
-            if hasattr(self, 'midi_player') and self.midi_player:
-                self.midi_player.pause_midi()
-                
-                # 更新按钮状态
-                self.pause_button.configure(text="恢复")
-                self.ui_manager.set_status("MIDI播放已暂停")
-                self._log_message("MIDI播放已暂停")
-                
-                # 无进度模拟逻辑
-                
-        except Exception as e:
-            self._log_message(f"暂停MIDI播放失败: {str(e)}", "ERROR")
-    
-    def _resume_midi_play(self):
-        """恢复MIDI播放"""
-        try:
-            if hasattr(self, 'midi_player') and self.midi_player:
-                self.midi_player.resume_midi()
-                
-                # 更新按钮状态
-                self.pause_button.configure(text="暂停")
-                self.ui_manager.set_status("MIDI播放已恢复")
-                self._log_message("MIDI播放已恢复")
-                
-                # 无进度模拟逻辑
-                
-        except Exception as e:
-            self._log_message(f"恢复MIDI播放失败: {str(e)}", "ERROR")
-    
-    def _pause_auto_play(self):
-        """暂停自动弹琴"""
-        try:
-            if hasattr(self, 'auto_player') and self.auto_player:
-                self.auto_player.pause_auto_play()
-                
-                # 更新按钮状态
-                self.pause_button.configure(text="恢复")
-                self.ui_manager.set_status("自动弹琴已暂停")
-                self._log_message("自动弹琴已暂停")
-                
-                
-        except Exception as e:
-            self._log_message(f"暂停自动弹琴失败: {str(e)}", "ERROR")
-    
-    def _resume_auto_play(self):
-        """恢复自动弹琴"""
-        try:
-            if hasattr(self, 'auto_player') and self.auto_player:
-                self.auto_player.resume_auto_play()
-                
-                # 更新按钮状态
-                self.pause_button.configure(text="暂停")
-                self.ui_manager.set_status("自动弹琴已恢复")
-                self._log_message("自动弹琴已恢复")
-                
-                
-        except Exception as e:
-            self._log_message(f"恢复自动弹琴失败: {str(e)}", "ERROR")
-    
     def _start_auto_play(self):
-        """开始自动弹琴"""
+        """开始自动弹琴（仅MIDI模式）"""
         try:
             # 检查是否已经在演奏中
             if hasattr(self, 'auto_player') and self.auto_player and self.auto_player.is_playing:
                 self._log_message("自动演奏已在进行中", "WARNING")
                 return
-            
             # 检查按钮状态
             if self.auto_play_button.cget("text") == "停止弹琴":
                 self._log_message("自动演奏已在进行中", "WARNING")
                 return
-            
-            # 自动检测演奏模式
-            mode = self._auto_detect_mode()
-            self._log_message(f"检测到演奏模式: {mode}", "INFO")
-            
-            # 根据模式执行不同的逻辑
-            if mode == "lrcp":
-                self._start_lrcp_play()
-            else:
-                self._start_midi_play()
-            
+            # 直接进入MIDI播放
+            self._start_midi_play()
         except Exception as e:
             self._log_message(f"启动自动弹琴失败: {str(e)}", "ERROR")
             messagebox.showerror("错误", f"启动自动弹琴失败:\n{str(e)}")
-    
-    def _start_lrcp_play(self):
-        """开始LRCp模式演奏"""
-        try:
-            # 检查是否有乐谱文件
-            score_path = self.score_path_var.get()
-            if not score_path:
-                messagebox.showwarning("警告", "请先选择乐谱文件(.lrcp)")
-                return
-            
-            if not os.path.exists(score_path):
-                messagebox.showerror("错误", "乐谱文件不存在")
-                return
-            
-            self._log_message(f"开始LRCp模式演奏: {os.path.basename(score_path)}")
-            
-            # LRCp 播放暂未实现，避免使用模拟模式
-            self.ui_manager.set_status("LRCp 播放暂未实现")
-            self._log_message("LRCp 播放暂未实现，待模块实现后接入", "WARNING")
-            messagebox.showinfo("提示", "LRCp 播放暂未实现，当前版本不支持。")
-            
-        except Exception as e:
-            self._log_message(f"LRCp模式演奏失败: {str(e)}", "ERROR")
-            messagebox.showerror("错误", f"LRCp模式演奏失败:\n{str(e)}")
     
     def _start_midi_play(self):
         """开始MIDI模式演奏"""
@@ -1686,25 +1603,34 @@ class MeowFieldAutoPiano:
                 except Exception:
                     pass
                 
-                # 设置回调
+                # 设置回调（按开关控制进度更新；完成回调保持启用以维持自动下一首）
+                enable_cb = True
+                try:
+                    enable_cb = bool(self.playback_callbacks_enabled_var.get())
+                except Exception:
+                    enable_cb = True
                 self.auto_player.set_callbacks(
                     on_start=lambda: self._log_message("自动演奏已开始", "SUCCESS"),
                     on_pause=lambda: self._log_message("自动演奏已暂停", "INFO"),
                     on_resume=lambda: self._log_message("自动演奏已恢复", "INFO"),
                     on_stop=lambda: self._log_message("自动演奏已停止"),
-                    on_progress=lambda p: self._on_progress_update(p),
+                    on_progress=(lambda p: self._on_progress_update(p)) if enable_cb else None,
                     on_complete=lambda: self._on_playback_complete(),
                     on_error=lambda msg: self._log_message(f"自动演奏错误: {msg}", "ERROR")
                 )
                 
                 # 根据文件类型选择演奏模式
                 if file_type == "MIDI文件":
-                    # 使用21键系统的默认键盘映射（仅 L/M/H 1-7）
-                    default_key_mapping = {
-                        'L1': 'a', 'L2': 's', 'L3': 'd', 'L4': 'f', 'L5': 'g', 'L6': 'h', 'L7': 'j',
-                        'M1': 'q', 'M2': 'w', 'M3': 'e', 'M4': 'r', 'M5': 't', 'M6': 'y', 'M7': 'u',
-                        'H1': '1', 'H2': '2', 'H3': '3', 'H4': '4', 'H5': '5', 'H6': '6', 'H7': '7'
-                    }
+                    # 使用持久化的21键映射（若管理器不可用则回退到默认）
+                    try:
+                        if hasattr(self, 'keymap_manager') and self.keymap_manager:
+                            default_key_mapping = self.keymap_manager.get_mapping()
+                        else:
+                            from meowauto.config.key_mapping_manager import DEFAULT_MAPPING
+                            default_key_mapping = DEFAULT_MAPPING
+                    except Exception:
+                        from meowauto.config.key_mapping_manager import DEFAULT_MAPPING
+                        default_key_mapping = DEFAULT_MAPPING
                     # 若存在与当前文件匹配的已解析音符，则直接使用它们进行回放，绕过后处理
                     use_analyzed = False
                     try:
@@ -1829,10 +1755,15 @@ class MeowFieldAutoPiano:
         self.ui_manager.set_status("播放完成")
         
         # 自动播放下一首
-        self._play_next()
+        try:
+            if hasattr(self, 'root'):
+                self.root.after(0, self._play_next)
+            else:
+                self._play_next()
+        except Exception:
+            self._play_next()
     
     def _play_next(self):
-        """根据播放顺序设置播放下一首"""
         try:
             all_items = self.playlist_tree.get_children()
             if not all_items:
@@ -1840,11 +1771,13 @@ class MeowFieldAutoPiano:
                 return
             order = getattr(self, 'playlist_order_var', tk.StringVar(value="顺序")).get()
             current_selected = self.playlist_tree.selection()
-            # 单曲循环：保持当前选中并重播
             if order == "单曲循环" and current_selected:
-                self._start_auto_play()
+                # 重新播放当前
+                if hasattr(self, 'root'):
+                    self.root.after(0, self._play_selected_playlist_item)
+                else:
+                    self._play_selected_playlist_item()
                 return
-            # 随机播放：随机选择一个（可避免与当前相同）
             if order == "随机":
                 import random
                 if current_selected and len(all_items) > 1:
@@ -1853,21 +1786,73 @@ class MeowFieldAutoPiano:
                 else:
                     next_item = random.choice(all_items)
                 self.playlist_tree.selection_set(next_item)
-                self._start_auto_play()
+                if hasattr(self, 'root'):
+                    self.root.after(0, self._play_selected_playlist_item)
+                else:
+                    self._play_selected_playlist_item()
                 return
-            # 顺序播放（默认）
             if current_selected:
                 current_index = list(all_items).index(current_selected[0])
-                next_index = (current_index + 1) % len(all_items)
-                self.playlist_tree.selection_set(all_items[next_index])
-                self._start_auto_play()
+                if order == "列表循环":
+                    next_index = (current_index + 1) % len(all_items)
+                    self.playlist_tree.selection_set(all_items[next_index])
+                    if hasattr(self, 'root'):
+                        self.root.after(0, self._play_selected_playlist_item)
+                    else:
+                        self._play_selected_playlist_item()
+                else:
+                    # 顺序：末尾停止
+                    if current_index + 1 >= len(all_items):
+                        self._stop_auto_play()
+                        return
+                    next_index = current_index + 1
+                    self.playlist_tree.selection_set(all_items[next_index])
+                    if hasattr(self, 'root'):
+                        self.root.after(0, self._play_selected_playlist_item)
+                    else:
+                        self._play_selected_playlist_item()
             else:
-                # 无选中则从第一首开始
                 self.playlist_tree.selection_set(all_items[0])
-                self._start_auto_play()
+                if hasattr(self, 'root'):
+                    self.root.after(0, self._play_selected_playlist_item)
+                else:
+                    self._play_selected_playlist_item()
         except Exception as e:
             self._log_message(f"播放下一首失败: {str(e)}", "ERROR")
             self._stop_auto_play()
+
+    def _play_selected_playlist_item(self):
+        """根据播放列表当前选择，设置模式/路径，必要时解析，然后开始自动播放"""
+        try:
+            selected = self.playlist_tree.selection()
+            if not selected:
+                return
+            item_id = selected[0]
+            item = self.playlist_tree.item(item_id)
+            filename = item['values'][1] if item['values'] else "未知文件"
+            ftype = item['values'][2] if item['values'] and len(item['values']) > 2 else "未知类型"
+            # 完整路径
+            full_path = None
+            try:
+                if hasattr(self, '_file_paths'):
+                    full_path = self._file_paths.get(item_id)
+            except Exception:
+                full_path = None
+            if not full_path:
+                full_path = filename
+            if ftype == "MIDI文件" and full_path:
+                self.playback_mode.set("midi")
+                self.midi_path_var.set(full_path)
+                # 解析（会应用预处理与后处理）
+                try:
+                    self._analyze_current_midi()
+                except Exception as e:
+                    self._log_message(f"解析失败: {e}", "ERROR")
+                self._start_auto_play()
+            else:
+                self._log_message(f"不支持的文件类型: {filename}", "WARNING")
+        except Exception as e:
+            self._log_message(f"播放选中项失败: {e}", "ERROR")
 
     def _export_event_csv(self):
         """导出事件表为CSV文件"""
@@ -1894,7 +1879,7 @@ class MeowFieldAutoPiano:
             messagebox.showinfo("成功", f"事件CSV已导出到:\n{filename}")
         except Exception as e:
             self._log_message(f"导出事件CSV失败: {e}", "ERROR")
-
+    
     def _export_key_notation(self):
         """导出按键谱：仅导出 note_on 事件，以键位映射（非音名），并按时间间隔加入空格。
         键位映射：
@@ -1978,13 +1963,8 @@ class MeowFieldAutoPiano:
                 if reg == 'M':
                     return MID.get(deg, 'q')
                 return HIGH.get(deg, '1')
-            # 使用 BPM 推算空格粒度：1 空格 = 八分音符
-            try:
-                bpm = int(getattr(self, 'bpm_var', tk.IntVar(value=100)).get())
-                beat = 60.0 / max(1, bpm)
-                unit = beat / 2.0
-            except Exception:
-                unit = 0.3
+            # 固定空格粒度（BPM 控件已移除）：1 空格 = 固定时长
+            unit = 0.3
             # 生成文本：同一时间点内，将和弦键（若有）放在最前，然后是音符键；多键同刻用方括号聚合
             parts = []
             last_t = None
@@ -2018,72 +1998,8 @@ class MeowFieldAutoPiano:
         except Exception as e:
             self._log_message(f"导出按键谱失败: {e}", "ERROR")
     
-    def _play_midi(self):
-        """播放MIDI"""
-        midi_path = self.midi_path_var.get()
-        if not midi_path:
-            messagebox.showerror("错误", "请先选择MIDI文件")
-            return
-        
-        if not os.path.exists(midi_path):
-            messagebox.showerror("错误", "MIDI文件不存在")
-            return
-        
-        self.ui_manager.set_status("正在播放MIDI...")
-        self._log_message("开始播放MIDI文件")
-        
-        try:
-            # 尝试使用meowauto模块中的MIDI播放功能
-            from meowauto.playback import MidiPlayer
-            from meowauto.core import Logger
-            
-            # 创建播放器实例并保存为实例属性
-            logger = Logger()
-            self.midi_player = MidiPlayer(logger)  # 保存为实例属性
-            
-            # 设置播放参数
-            tempo = self.tempo_var.get()
-            volume = self.volume_var.get()
-            
-            # 设置播放参数
-            self.midi_player.set_tempo(tempo)
-            self.midi_player.set_volume(volume)
-            
-            # 设置播放回调
-            self.midi_player.set_callbacks(
-                on_start=lambda: self._log_message("MIDI播放已开始", "SUCCESS"),
-                on_pause=lambda: self._log_message("MIDI播放已暂停", "INFO"),
-                on_resume=lambda: self._log_message("MIDI播放已恢复", "INFO"),
-                on_stop=lambda: self._log_message("MIDI播放已停止"),
-                on_progress=lambda p: self._on_progress_update(p),
-                on_complete=lambda: self._on_playback_complete(),
-                on_error=lambda msg: self._log_message(f"MIDI播放错误: {msg}", "ERROR")
-            )
-            
-            # 开始播放
-            success = self.midi_player.play_midi(midi_path, progress_callback=self._on_progress_update)
-            
-            if success:
-                self._log_message("MIDI播放成功", "SUCCESS")
-                self.ui_manager.set_status("MIDI播放中...")
-                
-                # 启用暂停按钮
-                if hasattr(self, 'pause_button'):
-                    self.pause_button.configure(text="暂停", state="normal")
-                
-                # 进度由真实回调驱动
-            else:
-                self._log_message("MIDI播放失败", "ERROR")
-                self.ui_manager.set_status("MIDI播放失败")
-                messagebox.showerror("错误", "MIDI播放失败，请检查文件格式")
-                
-        except ImportError:
-            self._log_message("MIDI播放模块不可用", "ERROR")
-            messagebox.showerror("错误", "MIDI播放模块不可用，请检查meowauto模块")
-        except Exception as e:
-            self._log_message(f"MIDI播放异常: {str(e)}", "ERROR")
-            messagebox.showerror("错误", f"MIDI播放过程中发生错误:\n{str(e)}")
     
+
     def _stop_playback(self):
         """停止播放"""
         try:
@@ -2123,10 +2039,113 @@ class MeowFieldAutoPiano:
             
         except Exception as e:
             self._log_message(f"停止播放失败: {str(e)}", "ERROR")
+
+    def _play_midi(self):
+        """播放左上选择的MIDI文件（独立播放器）"""
+        try:
+            midi_path = self.midi_path_var.get() if hasattr(self, 'midi_path_var') else ''
+            if not midi_path:
+                messagebox.showerror("错误", "请先选择MIDI文件")
+                return
+            if not os.path.exists(midi_path):
+                messagebox.showerror("错误", "MIDI文件不存在")
+                return
+            self.ui_manager.set_status("正在播放MIDI...")
+            self._log_message("开始播放MIDI文件")
+            from meowauto.playback import MidiPlayer
+            from meowauto.core import Logger
+            logger = Logger()
+            self.midi_player = MidiPlayer(logger)
+            # 参数
+            tempo = float(self.tempo_var.get()) if hasattr(self, 'tempo_var') else 1.0
+            volume = float(self.volume_var.get()) if hasattr(self, 'volume_var') else 0.7
+            try:
+                self.midi_player.set_tempo(tempo)
+            except Exception:
+                pass
+            try:
+                self.midi_player.set_volume(volume)
+            except Exception:
+                pass
+            # 回调
+            try:
+                self.midi_player.set_callbacks(
+                    on_start=lambda: self._log_message("MIDI播放已开始", "SUCCESS"),
+                    on_pause=lambda: self._log_message("MIDI播放已暂停", "INFO"),
+                    on_resume=lambda: self._log_message("MIDI播放已恢复", "INFO"),
+                    on_stop=lambda: self._log_message("MIDI播放已停止"),
+                    on_progress=(lambda p: self._on_progress_update(p)),
+                    on_complete=lambda: self._on_playback_complete(),
+                    on_error=lambda msg: self._log_message(f"MIDI播放错误: {msg}", "ERROR")
+                )
+            except Exception:
+                pass
+            # 开始播放
+            ok = False
+            try:
+                ok = bool(self.midi_player.play_midi(midi_path, progress_callback=self._on_progress_update))
+            except Exception as e:
+                self._log_message(f"启动MIDI播放失败: {e}", "ERROR")
+            if ok:
+                self._log_message("MIDI播放成功", "SUCCESS")
+                self.ui_manager.set_status("MIDI播放中...")
+                if hasattr(self, 'pause_button'):
+                    self.pause_button.configure(text="暂停", state="normal")
+            else:
+                self._log_message("MIDI播放失败", "ERROR")
+                self.ui_manager.set_status("MIDI播放失败")
+                messagebox.showerror("错误", "MIDI播放失败，请检查文件格式")
+        except ImportError:
+            self._log_message("MIDI播放模块不可用", "ERROR")
+            messagebox.showerror("错误", "MIDI播放模块不可用，请检查meowauto模块")
+        except Exception as e:
+            self._log_message(f"MIDI播放异常: {e}", "ERROR")
+            messagebox.showerror("错误", f"MIDI播放过程中发生错误:\n{e}")
+
+    def _pause_midi_play(self):
+        """暂停MIDI播放（若支持）"""
+        try:
+            if hasattr(self, 'midi_player') and self.midi_player:
+                try:
+                    if hasattr(self.midi_player, 'pause_midi'):
+                        self.midi_player.pause_midi()
+                    elif hasattr(self.midi_player, 'pause'):
+                        self.midi_player.pause()
+                    self._log_message("MIDI播放已暂停")
+                    if hasattr(self, 'pause_button'):
+                        self.pause_button.configure(text="恢复")
+                except Exception as e:
+                    self._log_message(f"暂停MIDI失败: {e}", "WARNING")
+        except Exception:
+            pass
+
+    def _resume_midi_play(self):
+        """恢复MIDI播放（若支持）"""
+        try:
+            if hasattr(self, 'midi_player') and self.midi_player:
+                try:
+                    if hasattr(self.midi_player, 'resume_midi'):
+                        self.midi_player.resume_midi()
+                    elif hasattr(self.midi_player, 'resume'):
+                        self.midi_player.resume()
+                    self._log_message("MIDI播放已恢复")
+                    if hasattr(self, 'pause_button'):
+                        self.pause_button.configure(text="暂停")
+                except Exception as e:
+                    self._log_message(f"恢复MIDI失败: {e}", "WARNING")
+        except Exception:
+            pass
     
     def _add_file_to_playlist(self, file_path, file_type):
         """添加文件到播放列表"""
         try:
+            # 初始化路径字典
+            if not hasattr(self, '_file_paths'):
+                self._file_paths = {}
+            # 绝对路径与去重
+            abspath = os.path.abspath(file_path)
+            if abspath in self._file_paths.values():
+                return False
             # 添加到播放列表
             item_count = len(self.playlist_tree.get_children()) + 1
             file_name = os.path.basename(file_path)
@@ -2137,10 +2156,14 @@ class MeowFieldAutoPiano:
                 try:
                     # 尝试获取文件时长
                     if file_path.lower().endswith('.mid') or file_path.lower().endswith('.midi'):
-                        import mido
-                        mid = mido.MidiFile(file_path)
-                        duration_seconds = mid.length
-                        duration = f"{int(duration_seconds//60):02d}:{int(duration_seconds%60):02d}"
+                        try:
+                            import mido
+                        except Exception:
+                            mido = None
+                        if mido is not None:
+                            mid = mido.MidiFile(file_path)
+                            duration_seconds = mid.length
+                            duration = f"{int(duration_seconds//60):02d}:{int(duration_seconds%60):02d}"
                     else:
                         duration = "未知"
                 except:
@@ -2149,39 +2172,61 @@ class MeowFieldAutoPiano:
             # 插入项目并存储完整路径
             item_id = self.playlist_tree.insert("", "end", values=(item_count, file_name, file_type, duration, "未播放"))
             # 将完整路径存储到字典中
-            if not hasattr(self, '_file_paths'):
-                self._file_paths = {}
-            self._file_paths[item_id] = file_path
+            self._file_paths[item_id] = abspath
             self._log_message(f"已添加到播放列表: {file_name}")
-            
+            return True
         except Exception as e:
             self._log_message(f"添加文件到播放列表失败: {str(e)}", "ERROR")
+            return False
     
     def _add_to_playlist(self):
-        """添加文件到播放列表"""
-        file_path = filedialog.askopenfilename(
+        """添加文件到播放列表（支持多选）"""
+        paths = filedialog.askopenfilenames(
             title="选择文件",
             filetypes=[
-                ("乐谱文件", "*.lrcp"),
                 ("MIDI文件", "*.mid;*.midi"),
-                ("音频文件", "*.mp3;*.wav;*.flac;*.m4a;*.aac;*.ogg"),
                 ("所有文件", "*.*")
             ]
         )
-        if file_path:
+        added = 0
+        for file_path in paths or []:
             file_ext = os.path.splitext(file_path)[1].lower()
-            
-            # 确定文件类型
-            if file_ext == '.lrcp':
-                file_type = "LRCp乐谱"
-            elif file_ext in ['.mid', '.midi']:
+            if file_ext in ['.mid', '.midi']:
                 file_type = "MIDI文件"
-            elif file_ext in ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg']:
-                file_type = "音频文件"
             else:
                 file_type = "未知类型"
             
-            self._add_file_to_playlist(file_path, file_type)
+            if self._add_file_to_playlist(file_path, file_type):
+                added += 1
+        if added:
+            self._refresh_playlist_indices()
+            self._log_message(f"已添加 {added} 个文件到播放列表", "SUCCESS")
+
+    def _add_folder_to_playlist(self):
+        """选择文件夹并批量添加其中的MIDI文件"""
+        folder = filedialog.askdirectory(title="选择包含MIDI文件的文件夹")
+        if not folder:
+            return
+        midi_paths = []
+        try:
+            for root, _, files in os.walk(folder):
+                for name in files:
+                    lower = name.lower()
+                    if lower.endswith('.mid') or lower.endswith('.midi'):
+                        midi_paths.append(os.path.join(root, name))
+        except Exception as e:
+            self._log_message(f"扫描文件夹失败: {str(e)}", "ERROR")
+            return
+        if not midi_paths:
+            messagebox.showinfo("提示", "未发现MIDI文件 (*.mid, *.midi)")
+            return
+        added = 0
+        for p in sorted(midi_paths):
+            if self._add_file_to_playlist(p, "MIDI文件"):
+                added += 1
+        if added:
+            self._refresh_playlist_indices()
+            self._log_message(f"已从文件夹添加 {added} 个MIDI文件", "SUCCESS")
     
     def _remove_from_playlist(self):
         """从播放列表移除文件"""
@@ -2192,13 +2237,15 @@ class MeowFieldAutoPiano:
                 file_name = item_data['values'][1] if item_data['values'] else "未知文件"
                 self.playlist_tree.delete(item)
                 self._log_message(f"已从播放列表移除: {file_name}")
+                # 同步移除路径映射
+                try:
+                    if hasattr(self, '_file_paths') and item in self._file_paths:
+                        del self._file_paths[item]
+                except Exception:
+                    pass
             
             # 重新编号
-            items = self.playlist_tree.get_children()
-            for i, item in enumerate(items, 1):
-                values = list(self.playlist_tree.item(item)['values'])
-                values[0] = i
-                self.playlist_tree.item(item, values=values)
+            self._refresh_playlist_indices()
         else:
             messagebox.showwarning("提示", "请先选择要移除的项目")
     
@@ -2207,6 +2254,21 @@ class MeowFieldAutoPiano:
         if messagebox.askyesno("确认", "确定要清空播放列表吗？"):
             self.playlist_tree.delete(*self.playlist_tree.get_children())
             self._log_message("播放列表已清空")
+            if hasattr(self, '_file_paths'):
+                self._file_paths.clear()
+            self._refresh_playlist_indices()
+
+    def _refresh_playlist_indices(self):
+        """刷新播放列表序号列"""
+        try:
+            items = self.playlist_tree.get_children()
+            for i, item in enumerate(items, 1):
+                values = list(self.playlist_tree.item(item)['values'])
+                if values:
+                    values[0] = i
+                    self.playlist_tree.item(item, values=values)
+        except Exception:
+            pass
     
     def _save_playlist(self):
         """保存播放列表"""
@@ -2237,42 +2299,73 @@ class MeowFieldAutoPiano:
     
     def _on_playlist_double_click(self, event):
         """播放列表双击事件"""
-        selected = self.playlist_tree.selection()
-        if selected:
-            item_id = selected[0]
-            item = self.playlist_tree.item(item_id)
-            filename = item['values'][1] if item['values'] else "未知文件"
-            ftype = item['values'][2] if item['values'] and len(item['values']) > 2 else "未知类型"
-            # 获取完整路径
-            full_path = None
-            try:
-                if hasattr(self, '_file_paths'):
-                    full_path = self._file_paths.get(item_id)
-            except Exception:
-                full_path = None
-            if not full_path:
-                full_path = filename
-            # 切换模式并设置路径
-            if ftype == "MIDI文件" and full_path:
-                self.playback_mode.set("midi")
-                self.midi_path_var.set(full_path)
-                self.ui_manager.set_status(f"双击播放: {filename}")
-                self._log_message(f"双击播放: {filename}")
-                # 先解析再开始自动弹琴
-                try:
-                    self._analyze_current_midi()
-                except Exception as e:
-                    self._log_message(f"双击解析失败: {e}", "ERROR")
-                self._start_auto_play()
-            elif ftype == "LRCp乐谱" and full_path:
-                self.playback_mode.set("lrcp")
-                self.score_path_var.set(full_path)
-                self.ui_manager.set_status(f"双击播放: {filename}")
-                self._log_message(f"双击播放: {filename}")
-                self._start_auto_play()
-            else:
-                self.ui_manager.set_status(f"不支持的文件类型: {filename}")
-                self._log_message(f"不支持的文件类型: {filename}", "WARNING")
+        self._play_selected_playlist_item()
+
+    # ===== 预处理移调工具 =====
+    def _transpose_notes(self, notes, semitone):
+        """返回移调后的新 notes 列表，并更新 group 字段"""
+        try:
+            out = []
+            for n in notes:
+                m = dict(n)
+                pitch = int(m.get('note', 0))
+                pitch = max(0, min(127, pitch + int(semitone)))
+                m['note'] = pitch
+                m['group'] = groups.group_for_note(pitch)
+                out.append(m)
+            return out
+        except Exception:
+            return notes
+
+    def _white_key_ratio(self, notes):
+        """计算给定 notes 的白键占比(按事件音符计算)"""
+        try:
+            white = {0,2,4,5,7,9,11}
+            cnt = 0
+            total = 0
+            for n in notes:
+                pitch = int(n.get('note', 0))
+                total += 1
+                if (pitch % 12) in white:
+                    cnt += 1
+            return (cnt / total) if total else 0.0
+        except Exception:
+            return 0.0
+
+    def _auto_choose_best_transpose(self, notes):
+        """在[-6,6]范围内选择白键占比最高的移调，返回(最佳半音, 最佳占比)并应用移调结果到 notes 副本"""
+        best_s = 0
+        best_r = -1.0
+        best_notes = notes
+        try:
+            for s in range(-6, 7):
+                cand = self._transpose_notes(notes, s)
+                r = self._white_key_ratio(cand)
+                # 选择占比最高；占比相同优先绝对值更小，再优先正向(>=0)
+                better = False
+                if r > best_r:
+                    better = True
+                elif abs(r - best_r) < 1e-9:
+                    if abs(s) < abs(best_s) or (abs(s) == abs(best_s) and s >= 0 and best_s < 0):
+                        better = True
+                if better:
+                    best_r = r
+                    best_s = s
+                    best_notes = cand
+            # 应用最佳结果
+            # 注意：调用方期望返回 notes 已移调的副本
+            # 这里直接返回选择
+            # 更新 self.analysis_notes 会在上层完成
+            # 但为便捷，这里直接返回选择(半音, 占比)并让上层替换 notes
+            # 因为我们在上层使用返回的 notes
+            # 为保持接口一致，这里只返回半音和占比，上层据此重新设置 notes
+            # 然而当前上层逻辑希望自动分支“不重复移调”，所以改为直接返回半音和占比，并让上层忽略
+            # 为确保 notes 被替换，这里返回半音和占比，同时将 best_notes 赋值到一个属性供上层读取
+            self._auto_transposed_notes_cache = best_notes
+            return best_s, best_r
+        except Exception:
+            self._auto_transposed_notes_cache = notes
+            return 0, self._white_key_ratio(notes)
     
     def _clear_log(self):
         """清空日志"""
@@ -2330,8 +2423,7 @@ class MeowFieldAutoPiano:
                 # 添加一些测试项目
                 test_items = [
                     ("1", "测试MIDI文件.mid", "MIDI文件", "02:30", "未播放"),
-                    ("2", "示例音频.mp3", "音频文件", "03:45", "未播放"),
-                    ("3", "乐谱文件.lrcp", "LRCp乐谱", "02:15", "未播放")
+                    ("2", "示例音频.mp3", "音频文件", "03:45", "未播放")
                 ]
                 
                 for item in test_items:

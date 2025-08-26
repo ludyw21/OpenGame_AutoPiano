@@ -38,19 +38,7 @@ class ModuleManager:
             },
             'playback': {
                 'path': 'meowauto.playback',
-                'classes': ['AutoPlayer', 'MidiPlayer', 'PlaylistManager'],
-                'dependencies': ['core'],
-                'singleton': False
-            },
-            'music': {
-                'path': 'meowauto.music',
-                'classes': ['MusicTheoryProcessor', 'LrcpConverter', 'ScoreParser'],
-                'dependencies': ['core'],
-                'singleton': False
-            },
-            'audio': {
-                'path': 'meowauto.audio',
-                'classes': ['AudioConverter', 'MidiProcessor', 'PianoTransManager'],
+                'classes': ['AutoPlayer', 'MidiPlayer'],
                 'dependencies': ['core'],
                 'singleton': False
             },

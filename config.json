@@ -37,127 +37,17 @@
             "G7": "m"
         }
     },
-    "note_mapping": {
-        "C": "L1",
-        "C#": "L1",
-        "Db": "L1",
-        "D": "L2",
-        "D#": "L2",
-        "Eb": "L2",
-        "E": "L3",
-        "F": "L4",
-        "F#": "L4",
-        "Gb": "L4",
-        "G": "L5",
-        "G#": "L5",
-        "Ab": "L5",
-        "A": "L6",
-        "A#": "L6",
-        "Bb": "L6",
-        "B": "L7",
-        "C4": "M1",
-        "C#4": "M1",
-        "Db4": "M1",
-        "D4": "M2",
-        "D#4": "M2",
-        "Eb4": "M2",
-        "E4": "M3",
-        "F4": "M4",
-        "F#4": "M4",
-        "Gb4": "M4",
-        "G4": "M5",
-        "G#4": "M5",
-        "Ab4": "M5",
-        "A4": "M6",
-        "A#4": "M6",
-        "Bb4": "M6",
-        "B4": "M7",
-        "C5": "H1",
-        "C#5": "H1",
-        "Db5": "H1",
-        "D5": "H2",
-        "D#5": "H2",
-        "Eb5": "H2",
-        "E5": "H3",
-        "F5": "H4",
-        "F#5": "H4",
-        "Gb5": "H4",
-        "G5": "H5",
-        "G#5": "H5",
-        "Ab5": "H5",
-        "A5": "H6",
-        "A#5": "H6",
-        "Bb5": "H6",
-        "B5": "H7"
-    },
-    "chord_mapping": {
-        "C": [
-            "C",
-            "E",
-            "G"
-        ],
-        "Dm": [
-            "D",
-            "F",
-            "A"
-        ],
-        "Em": [
-            "E",
-            "G",
-            "B"
-        ],
-        "F": [
-            "F",
-            "A",
-            "C"
-        ],
-        "G": [
-            "G",
-            "B",
-            "D"
-        ],
-        "Am": [
-            "A",
-            "C",
-            "E"
-        ],
-        "G7": [
-            "G",
-            "B",
-            "D",
-            "F"
-        ]
-    },
     "settings": {
         "auto_play_delay": 0.001,
         "note_duration_multiplier": 1.0,
         "enable_logging": true,
-        "log_level": "INFO",
-        "max_log_lines": 1000,
-        "default_volume": 0.7,
-        "enable_progress_bar": true,
-        "auto_save_config": true,
-        "countdown_secs": 1
-    },
-    "paths": {
-        "piano_trans": "PianoTrans-v1.0/PianoTrans.exe",
-        "tmidi": "TMIDI/TMIDI.EXE",
-        "output_dir": "output",
-        "temp_dir": "temp"
+        "default_volume": 0.7
     },
     "ui": {
-        "window_width": 1000,
-        "window_height": 700,
-        "theme": "default",
-        "language": "zh_CN",
-        "font_family": "Microsoft YaHei",
-        "font_size": 10,
         "theme_name": "flatly",
         "theme_mode": "light",
-        "density": "compact",
+        "density": "comfortable",
         "scaling": "auto",
-        "sashpos": 742,
-        "sash_ratio": 0.5377,
         "sidebar_stub": true
     }
 }

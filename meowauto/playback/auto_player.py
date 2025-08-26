@@ -37,7 +37,9 @@ class AutoPlayer:
             'enable_quantize': True,           # 启用时间量化
             'quantize_grid_ms': 30,            # 量化栅格（毫秒）
             'enable_black_transpose': True,    # 启用黑键移调
-            'black_transpose_strategy': 'down' # 移调策略：down/nearest
+            'black_transpose_strategy': 'down', # 移调策略：down/nearest
+            # 键位映射策略
+            'enable_key_fallback': True        # 启用21键映射的强化回退策略
         }
         self.playback_callbacks = {
             'on_start': None,
@@ -1097,6 +1099,10 @@ class AutoPlayer:
             key_id = f"{region}{degree}"
             if key_id in key_mapping:
                 return key_mapping[key_id]
+
+            # 若禁用回退策略，则直接返回 None，不进行后续回退
+            if not bool(self.options.get('enable_key_fallback', True)):
+                return None
 
             # 回退1：同区域内按度数邻近顺序寻找
             order = ['1','2','3','4','5','6','7']

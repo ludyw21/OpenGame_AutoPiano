@@ -79,7 +79,7 @@ class UIManager:
         
         # 标题
         title_font = ("Microsoft YaHei", 18, "bold")
-        self._base_title = "🎹 MeowField AutoPiano v1.0.3"
+        self._base_title = "🎹 MeowField AutoPiano v1.0.4"
         self.title_label = ttk.Label(title_frame, text=self._base_title, font=title_font)
         self.title_label.pack(side=tk.LEFT)
         

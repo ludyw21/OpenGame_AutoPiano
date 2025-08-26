@@ -36,8 +36,13 @@ class Sidebar:
 
         ttk.Separator(self._container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 4))
 
-        # 仅保留“关于”按钮
+        # 常用按钮
         self._buttons = []
+        keymap_btn = ttk.Button(self._container, text="键位映射", width=12, command=lambda: self.on_action("keymap"))
+        keymap_btn.pack(padx=6, pady=4, fill=tk.X)
+        if ToolTip:
+            ToolTip(keymap_btn, text="自定义21键映射")
+        self._buttons.append(keymap_btn)
         about_btn = ttk.Button(self._container, text="关于", width=12, command=lambda: self.on_action("about"))
         about_btn.pack(padx=6, pady=4, fill=tk.X)
         if ToolTip:
