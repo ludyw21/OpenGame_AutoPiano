@@ -259,6 +259,13 @@ class MeowFieldAutoPiano:
             except TypeError:
                 self.root.bind('<Unmap>', self._on_root_unmap)
                 self.root.bind('<Map>', self._on_root_map)
+            # 主窗体激活/失焦时联动隐藏/显示侧边栏（切换到其他应用时隐藏）
+            try:
+                self.root.bind('<FocusOut>', self._on_root_deactivate, add="+")
+                self.root.bind('<FocusIn>', self._on_root_activate, add="+")
+            except TypeError:
+                self.root.bind('<FocusOut>', self._on_root_deactivate)
+                self.root.bind('<FocusIn>', self._on_root_activate)
             self.sidebar.frame.bind('<Configure>', self._on_sidebar_configure)
             self._position_sidebar()
         except Exception as e:
@@ -309,6 +316,36 @@ class MeowFieldAutoPiano:
                 except Exception:
                     pass
                 self._position_sidebar()
+        except Exception:
+            pass
+
+    def _on_root_deactivate(self, event=None):
+        """当主窗体失去焦点（切到其他应用）时，隐藏侧边栏以免遮挡顶层。"""
+        try:
+            # 仅对顶层(root本身)的失焦进行处理
+            if event is None or event.widget is self.root:
+                if hasattr(self, 'sidebar_win') and self.sidebar_win:
+                    self.sidebar_win.withdraw()
+        except Exception:
+            pass
+
+    def _on_root_activate(self, event=None):
+        """当主窗体重新获得焦点时，恢复侧边栏显示并置顶。"""
+        try:
+            if event is None or event.widget is self.root:
+                if hasattr(self, 'sidebar_win') and self.sidebar_win:
+                    try:
+                        self.sidebar_win.deiconify()
+                    except Exception:
+                        try:
+                            self.sidebar_win.state('normal')
+                        except Exception:
+                            pass
+                    try:
+                        self.sidebar_win.lift()
+                    except Exception:
+                        pass
+                    self._position_sidebar()
         except Exception:
             pass
 
