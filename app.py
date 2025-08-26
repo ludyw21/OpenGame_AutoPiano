@@ -18,12 +18,8 @@ from ui_manager import UIManager
 from meowauto.midi import analyzer, groups
 from meowauto.ui.sidebar import Sidebar
 from meowauto.ui.yuanshen import YuanShenPage
-<<<<<<< HEAD
 from meowauto.config.key_mapping_manager import KeyMappingManager
 from meowauto.ui.keymap_editor import KeymapEditor
-=======
-from meowauto.playback.keymaps import get_game_key_mapping
->>>>>>> 4358240ebe4ae2bac1b96b24edf41928f509c229
 
 
 class MeowFieldAutoPiano:
@@ -1725,7 +1721,6 @@ class MeowFieldAutoPiano:
                 
                 # 根据文件类型选择演奏模式
                 if file_type == "MIDI文件":
-<<<<<<< HEAD
                     # 使用持久化的21键映射（若管理器不可用则回退到默认）
                     try:
                         if hasattr(self, 'keymap_manager') and self.keymap_manager:
@@ -1736,10 +1731,6 @@ class MeowFieldAutoPiano:
                     except Exception:
                         from meowauto.config.key_mapping_manager import DEFAULT_MAPPING
                         default_key_mapping = DEFAULT_MAPPING
-=======
-                    # 根据当前游戏选择21键映射（开放空间/原神）
-                    default_key_mapping = get_game_key_mapping(getattr(self, 'current_game', None))
->>>>>>> 4358240ebe4ae2bac1b96b24edf41928f509c229
                     # 若存在与当前文件匹配的已解析音符，则直接使用它们进行回放，绕过后处理
                     use_analyzed = False
                     try:
