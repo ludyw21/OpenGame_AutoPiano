@@ -68,12 +68,10 @@ jobs:
             
             Assets:
             - MeowField_AutoPiano.zip
-            - MeowField_AutoPiano.exe
           draft: false
           prerelease: false
           allowUpdates: true
           replacesArtifacts: true
           artifacts: |
-            artifact/MeowField_AutoPiano.zip,
-            dist/MeowField_AutoPiano/MeowField_AutoPiano.exe
+            artifact/MeowField_AutoPiano.zip
           token: ${{ secrets.GITHUB_TOKEN }} 
