@@ -18,6 +18,7 @@ from ui_manager import UIManager
 from meowauto.midi import analyzer, groups
 from meowauto.ui.sidebar import Sidebar
 from meowauto.ui.yuanshen import YuanShenPage
+from meowauto.playback.keymaps import get_game_key_mapping
 
 
 class MeowFieldAutoPiano:
@@ -251,6 +252,13 @@ class MeowFieldAutoPiano:
             except TypeError:
                 # 兼容不支持 add 参数的实现，退而求其次：直接绑定
                 self.root.bind('<Configure>', self._on_root_configure)
+            # 主窗体最小化/恢复时联动隐藏/显示侧边栏
+            try:
+                self.root.bind('<Unmap>', self._on_root_unmap, add="+")
+                self.root.bind('<Map>', self._on_root_map, add="+")
+            except TypeError:
+                self.root.bind('<Unmap>', self._on_root_unmap)
+                self.root.bind('<Map>', self._on_root_map)
             self.sidebar.frame.bind('<Configure>', self._on_sidebar_configure)
             self._position_sidebar()
         except Exception as e:
@@ -269,6 +277,40 @@ class MeowFieldAutoPiano:
     def _on_root_configure(self, event=None):
         """主窗体移动或尺寸变化时，重定位侧边栏"""
         self._position_sidebar()
+
+    def _on_root_unmap(self, event=None):
+        """主窗体最小化或隐藏时，隐藏侧边栏窗口"""
+        try:
+            if hasattr(self, 'root') and hasattr(self, 'sidebar_win') and self.sidebar_win:
+                # 仅当主窗体被最小化(iconic)时隐藏
+                state = None
+                try:
+                    state = self.root.state()
+                except Exception:
+                    state = None
+                if state == 'iconic' or state == 'withdrawn':
+                    self.sidebar_win.withdraw()
+        except Exception:
+            pass
+
+    def _on_root_map(self, event=None):
+        """主窗体从最小化或隐藏状态恢复时，显示并重定位侧边栏窗口"""
+        try:
+            if hasattr(self, 'sidebar_win') and self.sidebar_win:
+                try:
+                    self.sidebar_win.deiconify()
+                except Exception:
+                    try:
+                        self.sidebar_win.state('normal')
+                    except Exception:
+                        pass
+                try:
+                    self.sidebar_win.lift()
+                except Exception:
+                    pass
+                self._position_sidebar()
+        except Exception:
+            pass
 
     def _position_sidebar(self):
         try:
@@ -299,21 +341,37 @@ class MeowFieldAutoPiano:
         try:
             # 切换页面内容
             if not is_default:
-                # 隐藏主分栏
+                # 隐藏主分栏所在的容器（content_frame），避免空白占位
                 try:
-                    self.ui_manager.paned_window.forget()
+                    pw = getattr(self.ui_manager, 'paned_window', None)
+                    if pw is not None:
+                        content_parent_path = pw.winfo_parent()
+                        content_parent = pw.nametowidget(content_parent_path)
+                        content_parent.pack_forget()
                 except Exception:
                     pass
                 # 显示占位页
                 if self.yuanshen_page is None:
-                    self.yuanshen_page = YuanShenPage(self.ui_manager.page_container)
+                    # 传入 controller 以便在简洁页调用现有逻辑
+                    self.yuanshen_page = YuanShenPage(self.ui_manager.page_container, controller=self)
                 # 避免重复pack
                 if not str(self.yuanshen_page.frame) in [str(c) for c in self.ui_manager.page_container.pack_slaves()]:
                     self.yuanshen_page.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             else:
                 # 恢复主分栏
                 try:
-                    self.ui_manager.paned_window.pack(fill=tk.BOTH, expand=True)
+                    pw = getattr(self.ui_manager, 'paned_window', None)
+                    if pw is not None:
+                        content_parent_path = pw.winfo_parent()
+                        content_parent = pw.nametowidget(content_parent_path)
+                        # 隐藏原神页
+                        if self.yuanshen_page is not None:
+                            try:
+                                self.yuanshen_page.frame.pack_forget()
+                            except Exception:
+                                pass
+                        # 重新显示主内容容器
+                        content_parent.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
                 except Exception:
                     pass
                 # 隐藏占位页
@@ -1423,21 +1481,27 @@ class MeowFieldAutoPiano:
                     chord_drop_root = bool(self.r_chord_drop_root_var.get())
                 else:
                     chord_drop_root = bool(self.chord_drop_root_var.get()) if hasattr(self, 'chord_drop_root_var') else False
-                # 将中文显示映射为内部模式值
-                if hasattr(self, 'r_chord_mode_var'):
-                    chord_mode_display = str(self.r_chord_mode_var.get())
+                # 在“原神”模式下禁用和弦键位，使用三和弦匹配占位
+                if getattr(self, 'current_game', None) == '原神':
+                    enable_chord_keys = False
+                    chord_drop_root = False
+                    chord_mode = 'triad'
                 else:
-                    chord_mode_display = str(self.chord_mode_var.get()) if hasattr(self, 'chord_mode_var') else '七和弦优先'
-                _mode_map = {
-                    '七和弦优先': 'triad7',
-                    '仅三和弦': 'triad',
-                    '贪心匹配': 'greedy',
-                    # 兼容旧配置（若直接存了英文值）
-                    'triad7': 'triad7',
-                    'triad': 'triad',
-                    'greedy': 'greedy',
-                }
-                chord_mode = _mode_map.get(chord_mode_display, 'triad7')
+                    # 将中文显示映射为内部模式值
+                    if hasattr(self, 'r_chord_mode_var'):
+                        chord_mode_display = str(self.r_chord_mode_var.get())
+                    else:
+                        chord_mode_display = str(self.chord_mode_var.get()) if hasattr(self, 'chord_mode_var') else '七和弦优先'
+                    _mode_map = {
+                        '七和弦优先': 'triad7',
+                        '仅三和弦': 'triad',
+                        '贪心匹配': 'greedy',
+                        # 兼容旧配置（若直接存了英文值）
+                        'triad7': 'triad7',
+                        'triad': 'triad',
+                        'greedy': 'greedy',
+                    }
+                    chord_mode = _mode_map.get(chord_mode_display, 'triad7')
                 if hasattr(self, 'r_chord_min_sustain_var'):
                     chord_min_sustain_ms = int(self.r_chord_min_sustain_var.get())
                 else:
@@ -1699,12 +1763,8 @@ class MeowFieldAutoPiano:
                 
                 # 根据文件类型选择演奏模式
                 if file_type == "MIDI文件":
-                    # 使用21键系统的默认键盘映射（仅 L/M/H 1-7）
-                    default_key_mapping = {
-                        'L1': 'a', 'L2': 's', 'L3': 'd', 'L4': 'f', 'L5': 'g', 'L6': 'h', 'L7': 'j',
-                        'M1': 'q', 'M2': 'w', 'M3': 'e', 'M4': 'r', 'M5': 't', 'M6': 'y', 'M7': 'u',
-                        'H1': '1', 'H2': '2', 'H3': '3', 'H4': '4', 'H5': '5', 'H6': '6', 'H7': '7'
-                    }
+                    # 根据当前游戏选择21键映射（开放空间/原神）
+                    default_key_mapping = get_game_key_mapping(getattr(self, 'current_game', None))
                     # 若存在与当前文件匹配的已解析音符，则直接使用它们进行回放，绕过后处理
                     use_analyzed = False
                     try:
@@ -2315,6 +2375,13 @@ class MeowFieldAutoPiano:
                 
                 self.log_text.insert(tk.END, formatted_message)
                 self.log_text.see(tk.END)  # 滚动到最新内容
+
+                # 若原神简洁页存在，镜像输出到其日志
+                try:
+                    if getattr(self, 'yuanshen_page', None) and hasattr(self.yuanshen_page, 'append_log'):
+                        self.yuanshen_page.append_log(formatted_message)
+                except Exception:
+                    pass
                 
                 # 限制日志行数，避免内存占用过大
                 lines = self.log_text.get("1.0", tk.END).split('\n')
