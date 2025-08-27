@@ -18,6 +18,7 @@ from ui_manager import UIManager
 from meowauto.midi import analyzer, groups
 from meowauto.ui.sidebar import Sidebar
 from meowauto.ui.yuanshen import YuanShenPage
+from meowauto.ui.sky import SkyPage
 
 
 class MeowFieldAutoPiano:
@@ -44,6 +45,7 @@ class MeowFieldAutoPiano:
         self.ui_manager = UIManager(self.root, self.event_bus)
         self.current_game = "开放空间"
         self.yuanshen_page = None
+        self.sky_page = None
         self.sidebar_win = None
         
         # 注册事件监听器
@@ -398,14 +400,14 @@ class MeowFieldAutoPiano:
                 self._switch_game('开放空间')
             elif key == 'game-yuanshen':
                 self._switch_game('原神')
+            elif key == 'game-sky':
+                self._switch_game('光遇')
             elif key == 'about':
                 self._show_about()
-            # 其他功能键可在此扩展
         except Exception as e:
-            self._log_message(f"侧边栏事件错误: {e}", "ERROR")
-
+            self._log_message(f"侧边栏操作失败: {e}", "ERROR")
     def _switch_game(self, game_name: str):
-        """切换游戏，原神显示占位页，默认恢复主界面"""
+        """切换游戏，占位页：原神/光遇；默认恢复主界面"""
         self.current_game = game_name
         is_default = (game_name in ('默认', '开放空间'))
         try:
@@ -420,13 +422,29 @@ class MeowFieldAutoPiano:
                         content_parent.pack_forget()
                 except Exception:
                     pass
-                # 显示占位页
-                if self.yuanshen_page is None:
-                    # 传入 controller 以便在简洁页调用现有逻辑
-                    self.yuanshen_page = YuanShenPage(self.ui_manager.page_container, controller=self)
-                # 避免重复pack
-                if not str(self.yuanshen_page.frame) in [str(c) for c in self.ui_manager.page_container.pack_slaves()]:
-                    self.yuanshen_page.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                # 显示对应占位页
+                if game_name == '原神':
+                    if self.yuanshen_page is None:
+                        self.yuanshen_page = YuanShenPage(self.ui_manager.page_container, controller=self)
+                    # 隐藏光遇页
+                    if self.sky_page is not None:
+                        try:
+                            self.sky_page.frame.pack_forget()
+                        except Exception:
+                            pass
+                    if not str(self.yuanshen_page.frame) in [str(c) for c in self.ui_manager.page_container.pack_slaves()]:
+                        self.yuanshen_page.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                elif game_name == '光遇':
+                    if self.sky_page is None:
+                        self.sky_page = SkyPage(self.ui_manager.page_container, controller=self)
+                    # 隐藏原神页
+                    if self.yuanshen_page is not None:
+                        try:
+                            self.yuanshen_page.frame.pack_forget()
+                        except Exception:
+                            pass
+                    if not str(self.sky_page.frame) in [str(c) for c in self.ui_manager.page_container.pack_slaves()]:
+                        self.sky_page.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             else:
                 # 恢复主分栏
                 try:
@@ -434,22 +452,21 @@ class MeowFieldAutoPiano:
                     if pw is not None:
                         content_parent_path = pw.winfo_parent()
                         content_parent = pw.nametowidget(content_parent_path)
-                        # 隐藏原神页
+                        # 隐藏占位页
                         if self.yuanshen_page is not None:
                             try:
                                 self.yuanshen_page.frame.pack_forget()
+                            except Exception:
+                                pass
+                        if self.sky_page is not None:
+                            try:
+                                self.sky_page.frame.pack_forget()
                             except Exception:
                                 pass
                         # 重新显示主内容容器
                         content_parent.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
                 except Exception:
                     pass
-                # 隐藏占位页
-                if self.yuanshen_page is not None:
-                    try:
-                        self.yuanshen_page.frame.pack_forget()
-                    except Exception:
-                        pass
             # 确保侧边栏可见并重定位
             try:
                 if self.sidebar_win and self.sidebar_win.winfo_exists():
@@ -461,6 +478,22 @@ class MeowFieldAutoPiano:
             self._update_titles_suffix(self.current_game)
         except Exception as e:
             self._log_message(f"切换游戏失败: {e}", "ERROR")
+
+    def _resolve_strategy_name(self) -> str:
+        """根据当前游戏解析键位映射策略名，保证向后兼容。
+        开放空间/默认/原神 -> strategy_21key
+        光遇 -> strategy_sky_3x5
+        其他未知 -> strategy_21key
+        """
+        try:
+            game = getattr(self, 'current_game', '开放空间')
+            if game in ('默认', '开放空间', '原神'):
+                return 'strategy_21key'
+            if game == '光遇':
+                return 'strategy_sky_3x5'
+        except Exception:
+            pass
+        return 'strategy_21key'
 
     def _show_about(self):
         """显示关于窗口，加载 README.md 内容"""
@@ -858,6 +891,7 @@ class MeowFieldAutoPiano:
             pp_frame.pack(fill=tk.X, padx=6, pady=6)
             self.enable_postproc_var = tk.BooleanVar(value=True)
             ttk.Checkbutton(pp_frame, text="启用后处理", variable=self.enable_postproc_var).grid(row=0, column=0, sticky=tk.W)
+
             ttk.Label(pp_frame, text="黑键移调").grid(row=0, column=1, sticky=tk.W, padx=(12,0))
             self.black_transpose_strategy_var = tk.StringVar(value="就近")
             self.black_transpose_combo = ttk.Combobox(pp_frame, textvariable=self.black_transpose_strategy_var, state="readonly",
@@ -870,45 +904,33 @@ class MeowFieldAutoPiano:
             self.enable_chord_var = tk.BooleanVar(value=False)
             ttk.Checkbutton(pp_frame, text="识别和弦(同窗同按计为和弦)", variable=self.enable_chord_var).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(6,0))
 
-            # 迁移：和弦键位设置（用于回放阶段）
-            chord_frame = ttk.LabelFrame(settings_inner, text="回放和弦键位设置", padding="8")
-            chord_frame.pack(fill=tk.X, padx=6, pady=(0,6))
-            self.r_enable_chord_keys_var = tk.BooleanVar(value=True)
+            # 后处理：和弦伴奏设置（固定追加键，不改变旋律）
+            accom_frame = ttk.LabelFrame(settings_inner, text="和弦伴奏(后处理)", padding="8")
+            accom_frame.pack(fill=tk.X, padx=6, pady=(0,6))
+            self.enable_chord_accomp_var = tk.BooleanVar(value=False)
             ttk.Checkbutton(
-                chord_frame,
-                text="启用和弦按键 (C,Dm,Em,F,G,Am,G7 -> z,x,c,v,b,n,m)",
-                variable=self.r_enable_chord_keys_var,
+                accom_frame,
+                text="启用和弦伴奏 (固定键: z,x,c,v,b,n,m)",
+                variable=self.enable_chord_accomp_var,
                 command=self._on_player_options_changed,
-            ).grid(row=0, column=0, columnspan=3, sticky=tk.W)
-            self.r_chord_drop_root_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(
-                chord_frame,
-                text="使用和弦键时去除根音",
-                variable=self.r_chord_drop_root_var,
-                command=self._on_player_options_changed,
-            ).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(4,0))
-            ttk.Label(chord_frame, text="和弦识别模式").grid(row=2, column=0, sticky=tk.W, pady=(6,0))
-            self.r_chord_mode_var = tk.StringVar(value="贪心匹配")
+            ).grid(row=0, column=0, columnspan=2, sticky=tk.W)
+            ttk.Label(accom_frame, text="模式").grid(row=0, column=2, sticky=tk.W, padx=(12,0))
+            self.chord_accomp_mode_var = tk.StringVar(value="greedy")
             ttk.Combobox(
-                chord_frame,
-                textvariable=self.r_chord_mode_var,
+                accom_frame,
+                textvariable=self.chord_accomp_mode_var,
                 state="readonly",
-                values=["七和弦优先", "仅三和弦", "贪心匹配"],
-            ).grid(row=2, column=1, sticky=tk.W)
-            ttk.Label(chord_frame, text="和弦最小延音(ms)").grid(row=2, column=2, sticky=tk.W, padx=(12,0))
-            self.r_chord_min_sustain_var = tk.IntVar(value=1500)
-            ttk.Spinbox(chord_frame, from_=0, to=5000, increment=10, textvariable=self.r_chord_min_sustain_var, width=8, command=self._on_player_options_changed).grid(row=2, column=3, sticky=tk.W)
-
-            # 键位映射策略（回放阶段）：新增“强化回退策略”开关
-            keymap_frame = ttk.LabelFrame(settings_inner, text="键位映射策略", padding="8")
-            keymap_frame.pack(fill=tk.X, padx=6, pady=(0,6))
-            self.r_enable_key_fallback_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(
-                keymap_frame,
-                text="启用强化回退策略(21键映射)",
-                variable=self.r_enable_key_fallback_var,
+                values=["triad7", "triad", "greedy"],
+            ).grid(row=0, column=3, sticky=tk.W)
+            ttk.Label(accom_frame, text="最小延音(ms)").grid(row=0, column=4, sticky=tk.W, padx=(12,0))
+            self.chord_accomp_min_sustain_var = tk.IntVar(value=120)
+            ttk.Spinbox(
+                accom_frame,
+                from_=0, to=5000, increment=10,
+                textvariable=self.chord_accomp_min_sustain_var,
+                width=8,
                 command=self._on_player_options_changed,
-            ).grid(row=0, column=0, sticky=tk.W)
+            ).grid(row=0, column=5, sticky=tk.W)
 
             # 解析按钮移至左侧“文件选择”区域的转换工具栏
 
@@ -1520,80 +1542,37 @@ class MeowFieldAutoPiano:
         """将 UI 的高级设置应用到 AutoPlayer"""
         try:
             if hasattr(self, 'auto_player') and self.auto_player and hasattr(self.auto_player, 'set_options'):
-                allow_rt = bool(self.allow_retrigger_var.get()) if hasattr(self, 'allow_retrigger_var') else True
-                gap_ms = int(self.retrigger_gap_var.get()) if hasattr(self, 'retrigger_gap_var') else 40
-                eps_ms = int(self.epsilon_var.get()) if hasattr(self, 'epsilon_var') else 6
-                send_ahead_ms = int(self.send_ahead_var.get()) if hasattr(self, 'send_ahead_var') else 2
-                spin_threshold_ms = int(self.spin_threshold_var.get()) if hasattr(self, 'spin_threshold_var') else 1
-                post_action_sleep_ms = int(self.post_action_sleep_var.get()) if hasattr(self, 'post_action_sleep_var') else 0
-                # 迁移到右侧：优先读取右侧变量，其次回退到左侧旧变量
-                if hasattr(self, 'r_enable_chord_keys_var'):
-                    enable_chord_keys = bool(self.r_enable_chord_keys_var.get())
-                else:
-                    enable_chord_keys = bool(self.enable_chord_keys_var.get()) if hasattr(self, 'enable_chord_keys_var') else False
-                if hasattr(self, 'r_chord_drop_root_var'):
-                    chord_drop_root = bool(self.r_chord_drop_root_var.get())
-                else:
-                    chord_drop_root = bool(self.chord_drop_root_var.get()) if hasattr(self, 'chord_drop_root_var') else False
-                # 在“原神”模式下禁用和弦键位，使用三和弦匹配占位
-                if getattr(self, 'current_game', None) == '原神':
-                    enable_chord_keys = False
-                    chord_drop_root = False
-                    chord_mode = 'triad'
-                else:
-                    # 将中文显示映射为内部模式值
-                    if hasattr(self, 'r_chord_mode_var'):
-                        chord_mode_display = str(self.r_chord_mode_var.get())
-                    else:
-                        chord_mode_display = str(self.chord_mode_var.get()) if hasattr(self, 'chord_mode_var') else '七和弦优先'
-                    _mode_map = {
-                        '七和弦优先': 'triad7',
-                        '仅三和弦': 'triad',
-                        '贪心匹配': 'greedy',
-                        # 兼容旧配置（若直接存了英文值）
-                        'triad7': 'triad7',
-                        'triad': 'triad',
-                        'greedy': 'greedy',
-                    }
-                    chord_mode = _mode_map.get(chord_mode_display, 'triad7')
-                if hasattr(self, 'r_chord_min_sustain_var'):
-                    chord_min_sustain_ms = int(self.r_chord_min_sustain_var.get())
-                else:
-                    chord_min_sustain_ms = int(self.chord_min_sustain_var.get()) if hasattr(self, 'chord_min_sustain_var') else 120
-                # 键位映射：强化回退策略
+                # 仅保留必要选项下发：键位回退与黑键移调
                 enable_key_fallback = bool(self.r_enable_key_fallback_var.get()) if hasattr(self, 'r_enable_key_fallback_var') else True
-                self.auto_player.set_options(
-                    allow_retrigger=allow_rt,
-                    retrigger_min_gap_ms=gap_ms,
-                    epsilon_ms=eps_ms,
-                    send_ahead_ms=send_ahead_ms,
-                    spin_threshold_ms=spin_threshold_ms,
-                    post_action_sleep_ms=post_action_sleep_ms,
-                    enable_chord_keys=enable_chord_keys,
-                    chord_drop_root=chord_drop_root,
-                    chord_mode=chord_mode,
-                    chord_min_sustain_ms=chord_min_sustain_ms,
-                    enable_key_fallback=enable_key_fallback,
-                    # 预处理选项
-                    enable_quantize=bool(self.enable_quantize_var.get()) if hasattr(self, 'enable_quantize_var') else True,
-                    quantize_grid_ms=int(self.quantize_grid_var.get()) if hasattr(self, 'quantize_grid_var') else 30,
-                    enable_black_transpose=bool(self.enable_black_transpose_var.get()) if hasattr(self, 'enable_black_transpose_var') else True,
-                    black_transpose_strategy=(
-                        'down' if (getattr(self, 'black_transpose_strategy_var', None) and self.black_transpose_strategy_var.get() == '向下优先') else 'nearest'
-                    ),
+                enable_black_transpose = bool(self.enable_black_transpose_var.get()) if hasattr(self, 'enable_black_transpose_var') else True
+                black_transpose_strategy = (
+                    'down' if (getattr(self, 'black_transpose_strategy_var', None) and self.black_transpose_strategy_var.get() == '向下优先') else 'nearest'
                 )
-                # 刷新按键输入表（若存在该组件/函数）
+                # 新增：和弦伴奏选项（默认关闭；UI 尚未提供时使用默认值）
+                enable_chord_accomp = False
+                chord_accomp_mode = 'triad'
+                chord_accomp_min_sustain_ms = 120
                 try:
-                    if hasattr(self, 'refresh_key_input_table') and callable(getattr(self, 'refresh_key_input_table')):
-                        self.refresh_key_input_table()
-                    elif hasattr(self, '_refresh_key_input_table') and callable(getattr(self, '_refresh_key_input_table')):
-                        self._refresh_key_input_table()
-                    elif hasattr(self, '_refresh_key_mapping') and callable(getattr(self, '_refresh_key_mapping')):
-                        self._refresh_key_mapping()
+                    if hasattr(self, 'enable_chord_accomp_var'):
+                        enable_chord_accomp = bool(self.enable_chord_accomp_var.get())
+                    if hasattr(self, 'chord_accomp_mode_var'):
+                        chord_accomp_mode = str(self.chord_accomp_mode_var.get()) or 'triad'
+                    if hasattr(self, 'chord_accomp_min_sustain_var'):
+                        chord_accomp_min_sustain_ms = int(self.chord_accomp_min_sustain_var.get())
                 except Exception:
+                    # 保持默认值
                     pass
-        except Exception:
-            pass
+
+                self.auto_player.set_options(
+                    enable_key_fallback=enable_key_fallback,
+                    enable_black_transpose=enable_black_transpose,
+                    black_transpose_strategy=black_transpose_strategy,
+                    enable_chord_accomp=enable_chord_accomp,
+                    chord_accomp_mode=chord_accomp_mode,
+                    chord_accomp_min_sustain_ms=chord_accomp_min_sustain_ms,
+                )
+        except Exception as e:
+            self._log_message(f"应用回放设置失败: {str(e)}", "ERROR")
     
     def _start_auto_play(self):
         """开始自动弹琴（仅MIDI模式）"""
@@ -1729,12 +1708,22 @@ class MeowFieldAutoPiano:
                     if use_analyzed:
                         # 使用解析结果：仍需应用一次和弦/调度相关设置
                         self._apply_player_options()
-                        success = self.auto_player.start_auto_play_midi_events(self.analysis_notes, tempo=self.tempo_var.get(), key_mapping=default_key_mapping)
+                        try:
+                            strategy_name = self._resolve_strategy_name()
+                        except Exception:
+                            strategy_name = "strategy_21key"
+                        self._log_message(f"准备自动演奏(事件)：当前游戏={self.current_game}，策略={strategy_name}", "INFO")
+                        success = self.auto_player.start_auto_play_midi_events(self.analysis_notes, tempo=self.tempo_var.get(), key_mapping=default_key_mapping, strategy_name=strategy_name)
                     else:
                         # 在使用内部解析前，应用一次左侧回放设置
                         self._apply_player_options()
                         # 回退到内部解析
-                        success = self.auto_player.start_auto_play_midi(midi_path, tempo=self.tempo_var.get(), key_mapping=default_key_mapping)
+                        try:
+                            strategy_name = self._resolve_strategy_name()
+                        except Exception:
+                            strategy_name = "strategy_21key"
+                        self._log_message(f"准备自动演奏(MIDI)：当前游戏={self.current_game}，策略={strategy_name}", "INFO")
+                        success = self.auto_player.start_auto_play_midi(midi_path, tempo=self.tempo_var.get(), key_mapping=default_key_mapping, strategy_name=strategy_name)
                 else:
                     # 其他文件类型，使用模拟模式
                     success = True

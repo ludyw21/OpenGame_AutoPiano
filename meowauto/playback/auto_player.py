@@ -8,6 +8,9 @@ import threading
 from typing import List, Optional, Callable, Dict, Any
 from meowauto.utils import midi_tools
 from meowauto.core import Event, KeySender, Logger
+from meowauto.playback.strategies import get_strategy
+from meowauto.playback.keymaps import get_default_mapping
+
 import os
 
 class AutoPlayer:
@@ -29,12 +32,12 @@ class AutoPlayer:
             'send_ahead_ms': 2,                # 提前量（为抵消系统调度/输入延迟，负值表示延后）
             'spin_threshold_ms': 1,            # 忙等阈值（最后阶段改为忙等，保证更精准触发）
             'post_action_sleep_ms': 0,         # 每批动作后的微停，0 表示不强制微停
-            'enable_chord_keys': True,         # 启用和弦按键（z,x,c,v,b,n,m）
-            'chord_drop_root': False,          # 使用和弦键时，是否去掉根音的单键映射
-            'chord_mode': 'triad7',            # 和弦识别模式：triad7/triad/greedy
-            'chord_min_sustain_ms': 120,       # 和弦键最小延音（毫秒）
+            # 可选：和弦伴奏（附加映射事件，不改原事件）
+            'enable_chord_accomp': False,      # 启用和弦伴奏（默认关闭）
+            'chord_accomp_mode': 'triad',      # triad/triad7/greedy
+            'chord_accomp_min_sustain_ms': 120,# 伴奏最小延音阈值（毫秒）
             # MIDI 预处理
-            'enable_quantize': True,           # 启用时间量化
+            'enable_quantize': False,          # 启用时间量化（默认关闭，保证“所见即所得”的时间）
             'quantize_grid_ms': 30,            # 量化栅格（毫秒）
             'enable_black_transpose': True,    # 启用黑键移调
             'black_transpose_strategy': 'down', # 移调策略：down/nearest
@@ -98,8 +101,11 @@ class AutoPlayer:
         return True
     
     def start_auto_play_midi(self, midi_file: str, tempo: float = 1.0, 
-                           key_mapping: Dict[str, str] = None) -> bool:
-        """开始自动演奏（MIDI模式）"""
+                           key_mapping: Dict[str, str] = None,
+                           strategy_name: Optional[str] = None) -> bool:
+        """开始自动演奏（MIDI模式）
+        解析 MIDI -> 展开为 note_on/note_off 事件 -> 直接走映射事件线程（逐事件调度，无同窗批处理）。
+        """
         if self.is_playing:
             self.logger.log("自动演奏已在进行中", "WARNING")
             return False
@@ -108,15 +114,21 @@ class AutoPlayer:
             self.logger.log("MIDI文件路径为空", "ERROR")
             return False
         
+        # 解析并展开为事件，再使用“已映射事件线程”播放，避免旧的批处理逻辑
+        events = self._parse_midi_file(midi_file, key_mapping=key_mapping, strategy_name=strategy_name)
+        if not events:
+            return False
+
+        # 对同一时间戳，保证 note_off 先于 note_on
+        try:
+            events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+        except Exception:
+            pass
+
         self.current_tempo = tempo
         self.is_playing = True
         self.is_paused = False
-        
-        # 启动MIDI演奏线程
-        self.play_thread = threading.Thread(
-            target=self._auto_play_midi_thread, 
-            args=(midi_file, key_mapping)
-        )
+        self.play_thread = threading.Thread(target=self._auto_play_mapped_events_thread, args=(events,))
         self.play_thread.daemon = True
         self.play_thread.start()
         
@@ -124,13 +136,14 @@ class AutoPlayer:
         if self.playback_callbacks['on_start']:
             self.playback_callbacks['on_start']()
         
-        self.logger.log("开始自动演奏（MIDI模式）", "INFO")
+        self.logger.log("开始自动演奏（MIDI模式，经解析后逐事件调度）", "INFO")
         if self.debug:
-            self.logger.log(f"[DEBUG] 文件: {midi_file}, 速度: {self.current_tempo}", "DEBUG")
+            self.logger.log(f"[DEBUG] 文件: {midi_file}, 展开事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
         return True
     
     def start_auto_play_midi_events(self, notes: List[Dict[str, Any]], tempo: float = 1.0,
-                                    key_mapping: Dict[str, str] = None) -> bool:
+                                    key_mapping: Dict[str, str] = None,
+                                    strategy_name: Optional[str] = None) -> bool:
         """开始自动演奏（使用外部解析后的MIDI音符事件）
         期望 notes 为带有 start_time/end_time/note/channel 的列表。本方法会按固定21键映射展开为 note_on/note_off 事件，
         并直接进入回放线程，不再进行黑键移调或量化等后处理。
@@ -147,13 +160,15 @@ class AutoPlayer:
 
         # 展开为按键事件
         events: List[Dict[str, Any]] = []
+        # 解析策略
+        strategy = get_strategy(strategy_name or "strategy_21key")
         for n in notes:
             try:
                 st = float(n.get('start_time', 0.0))
                 et = float(n.get('end_time', st))
                 note = int(n.get('note', 0))
                 ch = int(n.get('channel', 0))
-                key = self._map_midi_note_to_key(note, key_mapping)
+                key = strategy.map_note(note, key_mapping or self._get_default_key_mapping(), self.options)
                 if not key:
                     continue
                 events.append({'start_time': st, 'type': 'note_on', 'key': key, 'velocity': int(n.get('velocity', 64)), 'channel': ch, 'note': note})
@@ -161,9 +176,26 @@ class AutoPlayer:
             except Exception:
                 continue
 
+        # 可选：和弦伴奏（不更改原事件，仅附加映射后的伴奏键位事件）
+        if events and bool(self.options.get('enable_chord_accomp', False)):
+            try:
+                acc = self._generate_chord_accompaniment(events, key_mapping or self._get_default_key_mapping(), strategy_name)
+                if acc:
+                    events.extend(acc)
+                    if self.debug:
+                        self.logger.log(f"[DEBUG] 伴奏追加事件: {len(acc)}", "DEBUG")
+            except Exception:
+                pass
+
         if not events:
             self.logger.log("展开后的回放事件为空", "ERROR")
             return False
+
+        # 对同一时间戳，保证 note_off 先于 note_on
+        try:
+            events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+        except Exception:
+            pass
 
         # 设置状态并启动线程
         self.current_tempo = tempo
@@ -332,332 +364,34 @@ class AutoPlayer:
                 self._handle_error("没有可演奏的事件")
                 return
 
-            # 排序并计算总时长
-            events.sort(key=lambda x: x['start_time'])
+            # 排序并计算总时长（同一时间戳，note_off 优先）
+            try:
+                events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+            except Exception:
+                pass
             total_time = events[-1]['start_time'] if events else 0.0
 
             from time import perf_counter
             start_perf = perf_counter()
             key_sender = KeySender()
 
-            idx = 0
-            epsilon = max(0.001, float(self.options.get('epsilon_ms', 6)) / 1000.0)
             send_ahead = float(self.options.get('send_ahead_ms', 2)) / 1000.0
             spin_threshold = max(0.0, float(self.options.get('spin_threshold_ms', 1)) / 1000.0)
             post_action_sleep = max(0.0, float(self.options.get('post_action_sleep_ms', 0)) / 1000.0)
 
-            # 引用计数避免过早释放
+            # 引用计数，避免重叠音过早释放
             active_counts: Dict[str, int] = {}
-
-            # === 和弦检测与和弦键位支持（与 _auto_play_midi_thread 保持一致） ===
-            chord_key_map: Dict[str, str] = {
-                'C': 'z', 'Dm': 'x', 'Em': 'c', 'F': 'v', 'G': 'b', 'Am': 'n', 'G7': 'm'
-            }
-            chord_patterns: Dict[str, set] = {
-                'G7': {7, 11, 2, 5},  # 优先识别七和弦
-                'C': {0, 4, 7},
-                'Dm': {2, 5, 9},
-                'Em': {4, 7, 11},
-                'F': {5, 9, 0},
-                'G': {7, 11, 2},
-                'Am': {9, 0, 4},
-            }
-            # 记录键最近一次按下，用于重触发/延迟释放判断
-            last_press_time: Dict[str, float] = {}
-            # 正在按下的和弦：chord_key -> {pc: count}
-            active_chords_pc_counts: Dict[str, Dict[int, int]] = {}
-            # 和弦延迟释放：chord_key -> 可释放时间戳（perf_counter 相对 start_perf）
-            chord_pending_release: Dict[str, float] = {}
-
-            def detect_chord_from_note_ons(note_on_events: List[Dict[str, Any]]) -> Optional[tuple]:
-                """从一批 note_on 事件中检测和弦，返回 (name, patt)。遵循 options['chord_mode'] 策略。"""
-                if not note_on_events:
-                    return None
-                pcs = set((ev.get('note', 0) % 12) for ev in note_on_events if 'note' in ev)
-                if not pcs:
-                    return None
-                mode = str(self.options.get('chord_mode', 'triad7'))
-                if mode == 'triad7':
-                    for name, patt in chord_patterns.items():
-                        if patt.issubset(pcs):
-                            return (name, patt)
-                    return None
-                if mode == 'triad':
-                    triad_names = [n for n in chord_patterns.keys() if n != 'G7']
-                    for name in triad_names:
-                        patt = chord_patterns[name]
-                        if patt.issubset(pcs):
-                            return (name, patt)
-                    return None
-                # greedy: 选择交集最大的候选，至少2个共有成员
-                best = None
-                best_size = 0
-                for name, patt in chord_patterns.items():
-                    inter = patt.intersection(pcs)
-                    sz = len(inter)
-                    if sz > best_size and sz >= 2:
-                        best = (name, patt)
-                        best_size = sz
-                return best
-
-            while idx < len(events) and self.is_playing:
-                while self.is_paused and self.is_playing:
-                    time.sleep(0.01)
-
-                group_time = events[idx]['start_time'] / max(0.01, self.current_tempo)
-
-                target = max(0.0, group_time - send_ahead)
-                while self.is_playing and not self.is_paused:
-                    now = perf_counter() - start_perf
-                    remain = target - now
-                    if remain <= 0:
-                        break
-                    if remain > 0.02:
-                        time.sleep(remain - 0.01)
-                    elif remain > spin_threshold:
-                        time.sleep(0.0005)
-                    else:
-                        while (perf_counter() - start_perf) < target and self.is_playing and not self.is_paused:
-                            pass
-                        break
-
-                j = idx
-                batch: List[Dict[str, Any]] = []
-                while j < len(events):
-                    t = events[j]['start_time'] / max(0.01, self.current_tempo)
-                    if abs(t - group_time) <= epsilon:
-                        batch.append(events[j])
-                        j += 1
-                    else:
-                        break
-
-                release_once: List[str] = []
-                press_once: List[str] = []
-                chord_press: List[str] = []
-
-                for ev in batch:
-                    if ev['type'] == 'note_off':
-                        k = ev['key']
-                        c = active_counts.get(k, 0)
-                        if c > 0:
-                            c -= 1
-                            active_counts[k] = c
-                            if c == 0:
-                                release_once.append(k)
-                        # 若存在和弦键，按音级减少其计数，必要时释放
-                        pc = ev.get('note', 0) % 12 if 'note' in ev else None
-                        if pc is not None:
-                            for ck, pc_counts in list(active_chords_pc_counts.items()):
-                                if pc in pc_counts and pc_counts[pc] > 0:
-                                    pc_counts[pc] -= 1
-                                    if all(v <= 0 for v in pc_counts.values()):
-                                        # 所有成员结束，考虑释放和弦键（加入延迟释放逻辑）
-                                        nowt = perf_counter() - start_perf
-                                        chord_min_sustain = max(0.0, float(self.options.get('chord_min_sustain_ms', 120)) / 1000.0)
-                                        first_press = last_press_time.get(ck, nowt)
-                                        elapsed = nowt - first_press
-                                        if elapsed >= chord_min_sustain:
-                                            if ck not in release_once:
-                                                release_once.append(ck)
-                                            ckc = active_counts.get(ck, 0)
-                                            if ckc > 0:
-                                                active_counts[ck] = max(0, ckc - 1)
-                                            del active_chords_pc_counts[ck]
-                                            chord_pending_release.pop(ck, None)
-                                        else:
-                                            chord_pending_release[ck] = nowt + (chord_min_sustain - elapsed)
-                                            del active_chords_pc_counts[ck]
-
-                # 检查到期的延迟释放的和弦
-                if chord_pending_release:
-                    nowt = perf_counter() - start_perf
-                    due = [ck for ck, t in chord_pending_release.items() if nowt >= t]
-                    for ck in due:
-                        if ck not in release_once:
-                            release_once.append(ck)
-                        ckc = active_counts.get(ck, 0)
-                        if ckc > 0:
-                            active_counts[ck] = max(0, ckc - 1)
-                        chord_pending_release.pop(ck, None)
-
-                if release_once:
-                    key_sender.release(release_once)
-                    if post_action_sleep > 0:
-                        time.sleep(post_action_sleep)
-
-                # 和弦检测（仅处理按下事件）
-                enable_chord_keys = bool(self.options.get('enable_chord_keys', False))
-                chord_drop_root = bool(self.options.get('chord_drop_root', False))
-                detected = None
-                if enable_chord_keys:
-                    note_on_events = [ev for ev in batch if ev['type'] == 'note_on']
-                    detected = detect_chord_from_note_ons(note_on_events)
-                    if detected:
-                        name, patt = detected
-                        ck = chord_key_map.get(name)
-                        if ck:
-                            if ck not in active_chords_pc_counts:
-                                active_chords_pc_counts[ck] = {pc: 0 for pc in patt}
-                            for ev in note_on_events:
-                                pc = ev.get('note', 0) % 12
-                                if pc in active_chords_pc_counts[ck]:
-                                    active_chords_pc_counts[ck][pc] += 1
-
-                for ev in batch:
-                    if ev['type'] == 'note_on':
-                        k = ev['key']
-                        c = active_counts.get(k, 0)
-                        if c == 0:
-                            press_once.append(k)
-                            active_counts[k] = 1
-                            last_press_time[k] = perf_counter() - start_perf
-                        else:
-                            # 简化：不做重触发，直接递增计数，等待后续 note_off 对齐
-                            active_counts[k] = c + 1
-
-                # 若检测到和弦，按下和弦键
-                if enable_chord_keys and detected:
-                    name, _ = detected
-                    ck = chord_key_map.get(name)
-                    if ck:
-                        cc = active_counts.get(ck, 0)
-                        if cc == 0:
-                            chord_press.append(ck)
-                            active_counts[ck] = 1
-                            last_press_time[ck] = perf_counter() - start_perf
-                        else:
-                            active_counts[ck] = cc + 1
-                        if ck in chord_pending_release:
-                            chord_pending_release.pop(ck, None)
-
-                if press_once:
-                    key_sender.press(press_once)
-                    for k in press_once:
-                        last_press_time[k] = perf_counter() - start_perf
-
-                if chord_press:
-                    key_sender.press(list(dict.fromkeys(chord_press)))
-
-                if self.playback_callbacks['on_progress'] and total_time > 0:
-                    now = perf_counter() - start_perf
-                    progress = max(0.0, min(100.0, (now / (total_time / max(0.01, self.current_tempo))) * 100))
-                    try:
-                        self.playback_callbacks['on_progress'](progress)
-                    except Exception:
-                        pass
-
-                idx = j
-
-            remaining_pressed = [k for k, c in active_counts.items() if c > 0]
-            if remaining_pressed:
-                key_sender.release(remaining_pressed)
-
-            if self.is_playing:
-                if self.playback_callbacks['on_complete']:
-                    self.playback_callbacks['on_complete']()
-                self.logger.log("外部事件回放完成", "SUCCESS")
-
-        except Exception as e:
-            error_msg = f"外部事件回放失败: {str(e)}"
-            self._handle_error(error_msg)
-        finally:
-            self.is_playing = False
-    
-    def _auto_play_midi_thread(self, midi_file: str, key_mapping: Dict[str, str] = None):
-        """自动演奏线程 - MIDI模式（精确时序 + 固定21键映射）"""
-        try:
-            # 解析MIDI文件
-            events = self._parse_midi_file(midi_file, key_mapping)
-            if not events:
-                self._handle_error("MIDI文件解析失败")
-                return
-
-            # 按时间排序并计算总时长
-            events.sort(key=lambda x: x['start_time'])
-            total_time = events[-1]['start_time'] if events else 0.0
-            if self.debug:
-                self.logger.log(f"[DEBUG] 解析到事件数: {len(events)}, 总时长: {total_time:.3f}s", "DEBUG")
-
-            # 开始自动演奏
-            from time import perf_counter
-            start_perf = perf_counter()
-            key_sender = KeySender()
 
             idx = 0
-            epsilon = max(0.001, float(self.options.get('epsilon_ms', 6)) / 1000.0)  # 批处理窗口，默认 ~6ms
-            send_ahead = float(self.options.get('send_ahead_ms', 2)) / 1000.0
-            spin_threshold = max(0.0, float(self.options.get('spin_threshold_ms', 1)) / 1000.0)
-            post_action_sleep = max(0.0, float(self.options.get('post_action_sleep_ms', 0)) / 1000.0)
-            chord_mode = str(self.options.get('chord_mode', 'triad7'))
-            chord_min_sustain = max(0.0, float(self.options.get('chord_min_sustain_ms', 120)) / 1000.0)
-            # 键位引用计数，避免多个音符映射同一键时的过早释放
-            active_counts: Dict[str, int] = {}
-            last_press_time: Dict[str, float] = {}
-            # 和弦键映射与生命周期跟踪（按音级统计）
-            chord_key_map: Dict[str, str] = {
-                'C': 'z', 'Dm': 'x', 'Em': 'c', 'F': 'v', 'G': 'b', 'Am': 'n', 'G7': 'm'
-            }
-            chord_patterns: Dict[str, set] = {
-                'G7': {7, 11, 2, 5},  # 优先识别七和弦
-                'C': {0, 4, 7},
-                'Dm': {2, 5, 9},
-                'Em': {4, 7, 11},
-                'F': {5, 9, 0},
-                'G': {7, 11, 2},
-                'Am': {9, 0, 4},
-            }
-            chord_roots: Dict[str, int] = {
-                'C': 0, 'Dm': 2, 'Em': 4, 'F': 5, 'G': 7, 'Am': 9, 'G7': 7
-            }
-            # 正在按下的和弦：chord_key -> {pc: count}
-            active_chords_pc_counts: Dict[str, Dict[int, int]] = {}
-            # 和弦延迟释放：chord_key -> 可释放时间戳（perf_counter 相对 start_perf）
-            chord_pending_release: Dict[str, float] = {}
-
-            def detect_chord(note_ons: List[Dict[str, Any]]) -> Optional[tuple]:
-                """从一批 note_on 事件中检测和弦，返回 (name, pcs)。根据 chord_mode 调整识别策略。
-                triad7: 优先匹配七和弦，再匹配三和弦（要求模式完整子集）
-                triad: 仅匹配三和弦（要求模式完整子集）
-                greedy: 贪心匹配，优先匹配包含成员最多的已知和弦，允许部分匹配（至少2个成员）。"""
-                if not note_ons:
-                    return None
-                pcs = set((ev.get('note', 0) % 12) for ev in note_ons if 'note' in ev)
-                if not pcs:
-                    return None
-                mode = chord_mode
-                # triad7: 按定义顺序，G7 放在字典前面已优先
-                if mode == 'triad7':
-                    for name, patt in chord_patterns.items():
-                        if patt.issubset(pcs):
-                            return (name, patt)
-                    return None
-                # triad: 过滤掉七和弦
-                if mode == 'triad':
-                    triad_names = [n for n in chord_patterns.keys() if n != 'G7']
-                    for name in triad_names:
-                        patt = chord_patterns[name]
-                        if patt.issubset(pcs):
-                            return (name, patt)
-                    return None
-                # greedy: 选择交集最大的候选，至少2个共有成员
-                best = None
-                best_size = 0
-                for name, patt in chord_patterns.items():
-                    inter = patt.intersection(pcs)
-                    sz = len(inter)
-                    if sz > best_size and sz >= 2:
-                        best = (name, patt)
-                        best_size = sz
-                return best
-
             while idx < len(events) and self.is_playing:
-                # 暂停等待
+                # 暂停处理
                 while self.is_paused and self.is_playing:
                     time.sleep(0.01)
-                # 计算本批目标时间（按照当前速度缩放）
-                group_time = events[idx]['start_time'] / max(0.01, self.current_tempo)
 
-                # 等待到该批次时间点：分级等待 + 忙等，结合提前量
+                ev = events[idx]
+                group_time = ev['start_time'] / max(0.01, self.current_tempo)
+
+                # 分级等待到目标时间（考虑提前量）
                 target = max(0.0, group_time - send_ahead)
                 while self.is_playing and not self.is_paused:
                     now = perf_counter() - start_perf
@@ -674,176 +408,27 @@ class AutoPlayer:
                             pass
                         break
 
-                # 收集同窗事件
-                j = idx
-                batch_events: List[Dict[str, Any]] = []
-
-                while j < len(events):
-                    t = events[j]['start_time'] / max(0.01, self.current_tempo)
-                    if abs(t - group_time) <= epsilon:
-                        batch_events.append(events[j])
-                        j += 1
-                    else:
-                        break
-
-                # 两阶段：先处理释放，再处理按下，结合引用计数
-                release_once: List[str] = []
-                press_once: List[str] = []
-                chord_press: List[str] = []
-
-                # 释放阶段
-                for ev in batch_events:
-                    if ev['type'] == 'note_off':
-                        k = ev['key']
-                        c = active_counts.get(k, 0)
-                        if c > 0:
-                            c -= 1
-                            active_counts[k] = c
-                            if c == 0:
-                                release_once.append(k)
-                        # 若存在和弦键，按音级减少其计数，必要时释放
-                        pc = ev.get('note', 0) % 12 if 'note' in ev else None
-                        if pc is not None:
-                            for ck, pc_counts in list(active_chords_pc_counts.items()):
-                                if pc in pc_counts and pc_counts[pc] > 0:
-                                    pc_counts[pc] -= 1
-                                    if all(v <= 0 for v in pc_counts.values()):
-                                        # 所有成员结束，考虑释放和弦键（加入延迟释放逻辑）
-                                        # 首次达到结束时刻记录可释放时间
-                                        nowt = perf_counter() - start_perf
-                                        first_press = last_press_time.get(ck, nowt)
-                                        elapsed = nowt - first_press
-                                        if elapsed >= chord_min_sustain:
-                                            # 达到最小延音，立即释放
-                                            if ck not in release_once:
-                                                release_once.append(ck)
-                                            # 同步减少和弦键计数并移除跟踪
-                                            ckc = active_counts.get(ck, 0)
-                                            if ckc > 0:
-                                                active_counts[ck] = max(0, ckc - 1)
-                                            del active_chords_pc_counts[ck]
-                                            chord_pending_release.pop(ck, None)
-                                        else:
-                                            # 未达到最小延音，推迟释放
-                                            chord_pending_release[ck] = nowt + (chord_min_sustain - elapsed)
-                                            # 清空计数，但保留 active_counts 由延迟释放处理
-                                            del active_chords_pc_counts[ck]
-
-                # 检查到期的延迟释放的和弦
-                if chord_pending_release:
-                    nowt = perf_counter() - start_perf
-                    due = [ck for ck, t in chord_pending_release.items() if nowt >= t]
-                    for ck in due:
-                        if ck not in release_once:
-                            release_once.append(ck)
-                        # 同步减少和弦键活动计数
-                        ckc = active_counts.get(ck, 0)
-                        if ckc > 0:
-                            active_counts[ck] = max(0, ckc - 1)
-                        chord_pending_release.pop(ck, None)
-
-                if release_once:
-                    if self.debug:
-                        dbg_now = perf_counter() - start_perf
-                        self.logger.log(f"[DEBUG] {dbg_now:.6f}s release {release_once}", "DEBUG")
-                    key_sender.release(release_once)
-                    if post_action_sleep > 0:
-                        time.sleep(post_action_sleep)
-
-                # 按下阶段 + 重触发处理
-                retrigger_release: List[str] = []
-                retrigger_press: List[str] = []
-                allow_retrigger = bool(self.options.get('allow_retrigger', True))
-                retrigger_gap = max(0.0, float(self.options.get('retrigger_min_gap_ms', 40)) / 1000.0)
-
-                # 和弦检测（仅处理按下事件）
-                enable_chord_keys = bool(self.options.get('enable_chord_keys', False))
-                chord_drop_root = bool(self.options.get('chord_drop_root', False))
-                detected = None
-                if enable_chord_keys:
-                    note_on_events = [ev for ev in batch_events if ev['type'] == 'note_on']
-                    detected = detect_chord(note_on_events)
-                    if detected:
-                        name, patt = detected
-                        ck = chord_key_map.get(name)
-                        if ck:
-                            # 初始化和弦成员PC计数
-                            if ck not in active_chords_pc_counts:
-                                active_chords_pc_counts[ck] = {pc: 0 for pc in patt}
-                            # 增加与本批相关的PC计数
-                            for ev in note_on_events:
-                                pc = ev.get('note', 0) % 12
-                                if pc in active_chords_pc_counts[ck]:
-                                    active_chords_pc_counts[ck][pc] += 1
-
-                for ev in batch_events:
-                    if ev['type'] == 'note_on':
-                        k = ev['key']
-                        c = active_counts.get(k, 0)
-                        # 不抑制旋律：即使检测到和弦，也允许单个音符按键照常触发
+                # 执行单个事件（严格按顺序）
+                if ev['type'] == 'note_off':
+                    k = ev['key']
+                    c = active_counts.get(k, 0)
+                    if c > 0:
+                        c -= 1
+                        active_counts[k] = c
                         if c == 0:
-                            press_once.append(k)
-                            active_counts[k] = 1
-                            last_press_time[k] = perf_counter() - start_perf
-                        else:
-                            # 已按下同键，考虑重触发
-                            if allow_retrigger:
-                                nowt = perf_counter() - start_perf
-                                lastt = last_press_time.get(k, -1e9)
-                                if (nowt - lastt) >= retrigger_gap:
-                                    retrigger_release.append(k)
-                                    retrigger_press.append(k)
-                                    last_press_time[k] = nowt
-                            # 不论是否重触发，计数加一，保障后续 note_off 对齐
-                            active_counts[k] = c + 1
+                            key_sender.release([k])
+                            if post_action_sleep > 0:
+                                time.sleep(post_action_sleep)
+                else:  # note_on
+                    k = ev['key']
+                    c = active_counts.get(k, 0)
+                    if c == 0:
+                        key_sender.press([k])
+                        if post_action_sleep > 0:
+                            time.sleep(post_action_sleep)
+                    active_counts[k] = c + 1
 
-                # 若检测到和弦，按下和弦键
-                if enable_chord_keys and detected:
-                    name, _ = detected
-                    ck = chord_key_map.get(name)
-                    if ck:
-                        cc = active_counts.get(ck, 0)
-                        if cc == 0:
-                            chord_press.append(ck)
-                            active_counts[ck] = 1
-                            # 记录首次按下时间用于延迟释放判断
-                            last_press_time[ck] = perf_counter() - start_perf
-                        else:
-                            active_counts[ck] = cc + 1
-                        # 新一轮按下时，若存在延迟释放计划，需取消
-                        if ck in chord_pending_release:
-                            chord_pending_release.pop(ck, None)
-
-                # 执行按下
-                if press_once:
-                    if self.debug:
-                        dbg_now = perf_counter() - start_perf
-                        self.logger.log(f"[DEBUG] {dbg_now:.6f}s press   {press_once}", "DEBUG")
-                    key_sender.press(press_once)
-                    for k in press_once:
-                        last_press_time[k] = perf_counter() - start_perf
-
-                if chord_press:
-                    if self.debug:
-                        dbg_now = perf_counter() - start_perf
-                        self.logger.log(f"[DEBUG] {dbg_now:.6f}s chord  {chord_press}", "DEBUG")
-                    key_sender.press(list(dict.fromkeys(chord_press)))
-
-                # 执行重触发（快速抬起再按下）
-                if retrigger_release:
-                    if self.debug:
-                        dbg_now = perf_counter() - start_perf
-                        self.logger.log(f"[DEBUG] {dbg_now:.6f}s retrigR {retrigger_release}", "DEBUG")
-                    key_sender.release(list(dict.fromkeys(retrigger_release)))
-                    if post_action_sleep > 0:
-                        time.sleep(post_action_sleep)
-                if retrigger_press:
-                    if self.debug:
-                        dbg_now = perf_counter() - start_perf
-                        self.logger.log(f"[DEBUG] {dbg_now:.6f}s retrigP {retrigger_press}", "DEBUG")
-                    key_sender.press(list(dict.fromkeys(retrigger_press)))
-
-                # 进度以时间为准
+                # 进度：按时间推进
                 if self.playback_callbacks['on_progress'] and total_time > 0:
                     now = perf_counter() - start_perf
                     progress = max(0.0, min(100.0, (now / (total_time / max(0.01, self.current_tempo))) * 100))
@@ -852,30 +437,25 @@ class AutoPlayer:
                     except Exception:
                         pass
 
-                idx = j
+                idx += 1
 
-            # 释放所有仍被按住的按键
             remaining_pressed = [k for k, c in active_counts.items() if c > 0]
             if remaining_pressed:
                 key_sender.release(remaining_pressed)
 
-            # 演奏完成
             if self.is_playing:
                 if self.playback_callbacks['on_complete']:
                     self.playback_callbacks['on_complete']()
-                self.logger.log("MIDI自动演奏完成", "SUCCESS")
-                if self.debug:
-                    end_perf = perf_counter() - start_perf
-                    self.logger.log(f"[DEBUG] 实际用时: {end_perf:.3f}s", "DEBUG")
+                self.logger.log("外部事件回放完成", "SUCCESS")
 
         except Exception as e:
             error_msg = f"MIDI自动演奏失败: {str(e)}"
             self._handle_error(error_msg)
         finally:
             self.is_playing = False
-    
-    def _parse_midi_file(self, midi_file: str, key_mapping: Dict[str, str] = None) -> List[Dict[str, Any]]:
-        """解析MIDI文件为演奏事件（固定21键映射，禁用和弦事件）"""
+
+    def _parse_midi_file(self, midi_file: str, key_mapping: Dict[str, str] = None, strategy_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """解析MIDI文件为演奏事件（策略映射，禁用和弦事件）"""
         try:
             try:
                 import mido
@@ -897,6 +477,9 @@ class AutoPlayer:
             if not key_mapping:
                 key_mapping = self._get_default_key_mapping()
             
+            # 解析策略
+            strategy = get_strategy(strategy_name or "strategy_21key")
+
             # 收集所有轨道消息及其轨内时间
             all_messages = []
             for track_num, track in enumerate(midi.tracks):
@@ -960,26 +543,33 @@ class AutoPlayer:
                 if msg.type == 'set_tempo':
                     current_tempo = msg.tempo
                     
+                # 统一处理 note_on/note_off，包括 vel=0 的 note_on 作为 note_off
+                ch = getattr(msg, 'channel', 0)
                 if msg.type == 'note_on' and msg.velocity > 0:
-                    # 音符开始
-                    active_notes[msg.note] = {
+                    # 音符开始：按 (channel, note) 入栈，支持同音重叠
+                    key_id = (ch, msg.note)
+                    stack = active_notes.setdefault(key_id, [])
+                    stack.append({
                         'start_time': track_time,
                         'velocity': msg.velocity,
-                        'channel': getattr(msg, 'channel', 0)
-                    }
+                        'channel': ch
+                    })
 
                 elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                    # 音符结束
+                    # 音符结束：匹配最近一次同键入栈
                     note = msg.note
-                    if note in active_notes:
-                        start_info = active_notes[note]
-                        
+                    key_id = (ch, note)
+                    if key_id in active_notes and active_notes[key_id]:
+                        start_info = active_notes[key_id].pop()
+                        if not active_notes[key_id]:
+                            del active_notes[key_id]
+
                         # 转换为绝对时间（秒），使用 tempo 表精确换算
                         start_time = tick_to_seconds(start_info['start_time'])
                         end_time = tick_to_seconds(track_time)
-                        
-                        # 映射到固定21键
-                        key = self._map_midi_note_to_key(note, key_mapping)
+
+                        # 使用策略映射到按键
+                        key = strategy.map_note(note, key_mapping, self.options)
                         if key:
                             # 添加按下事件
                             events.append({
@@ -990,87 +580,247 @@ class AutoPlayer:
                                 'channel': start_info['channel'],
                                 'note': note
                             })
-                            
+
                             # 添加释放事件
                             events.append({
                                 'start_time': end_time,
                                 'type': 'note_off',
                                 'key': key,
                                 'velocity': 0,
-                                'channel': getattr(msg, 'channel', 0),
+                                'channel': ch,
                                 'note': note
                             })
-                        
-                        del active_notes[note]
+                        else:
+                            if self.debug:
+                                try:
+                                    self.logger.log(
+                                        f"[DEBUG] map_note returned None: note={note}, ch={ch}, pc={note % 12}, strategy={getattr(strategy, 'name', 'unknown')}, fallback={bool(self.options.get('enable_key_fallback', True))}",
+                                        "DEBUG",
+                                    )
+                                except Exception:
+                                    pass
             
-            # 处理未结束的音符（设置合理的持续时间）
-            for note, info in active_notes.items():
-                start_time = tick_to_seconds(info['start_time'])
-                # 根据音符长度设置合理的持续时间
-                duration = 0.5  # 默认0.5秒
-                if note < 60:  # 低音区，持续时间稍长
-                    duration = 0.8
-                elif note > 72:  # 高音区，持续时间稍短
-                    duration = 0.3
-                
-                end_time = start_time + duration
-                
-                key = self._map_midi_note_to_key(note, key_mapping)
-                if key:
-                    # 添加按下事件
-                    events.append({
-                        'start_time': start_time,
-                        'type': 'note_on',
-                        'key': key,
-                        'velocity': info['velocity'],
-                        'channel': info['channel'],
-                        'note': note
-                    })
-                    
-                    # 添加释放事件
-                    events.append({
-                        'start_time': end_time,
-                        'type': 'note_off',
-                        'key': key,
-                        'velocity': 0,
-                        'channel': info['channel'],
-                        'note': note
-                    })
+            # 处理未结束的音符（设置合理的持续时间），支持 (channel,note) 的多重入栈
+            for (ch, note), stack in list(active_notes.items()):
+                while stack:
+                    info = stack.pop()
+                    start_time = tick_to_seconds(info['start_time'])
+                    # 根据音符区间设置合理的默认持续时间
+                    duration = 0.5  # 默认0.5秒
+                    if note < 60:  # 低音区，持续时间稍长
+                        duration = 0.8
+                    elif note > 72:  # 高音区，持续时间稍短
+                        duration = 0.3
+                    end_time = start_time + duration
+
+                    # 使用策略映射
+                    key = strategy.map_note(note, key_mapping, self.options)
+                    if key:
+                        # 添加按下事件
+                        events.append({
+                            'start_time': start_time,
+                            'type': 'note_on',
+                            'key': key,
+                            'velocity': info['velocity'],
+                            'channel': info['channel'],
+                            'note': note
+                        })
+
+                        # 添加释放事件
+                        events.append({
+                            'start_time': end_time,
+                            'type': 'note_off',
+                            'key': key,
+                            'velocity': 0,
+                            'channel': info['channel'],
+                            'note': note
+                        })
+                    else:
+                        if self.debug:
+                            try:
+                                self.logger.log(
+                                    f"[DEBUG] map_note returned None (dangling): note={note}, ch={ch}, pc={note % 12}, strategy={getattr(strategy, 'name', 'unknown')}, fallback={bool(self.options.get('enable_key_fallback', True))}",
+                                    "DEBUG",
+                                )
+                            except Exception:
+                                pass
             
-            # 预处理：黑键移调与量化
+            # 可选：和弦伴奏（对原始事件集生成伴奏，再一起移调与排序）
+            if events and bool(self.options.get('enable_chord_accomp', False)):
+                try:
+                    acc = self._generate_chord_accompaniment(events, key_mapping, strategy_name)
+                    if acc:
+                        events.extend(acc)
+                        if self.debug:
+                            self.logger.log(f"[DEBUG] 伴奏追加事件: {len(acc)}", "DEBUG")
+                except Exception:
+                    pass
+
+            # 预处理：黑键移调（不改变时间，只改变映射），不再做任何时间量化
             if bool(self.options.get('enable_black_transpose', True)):
                 events = midi_tools.transpose_black_keys(events, strategy=str(self.options.get('black_transpose_strategy', 'down')))
 
-            # 按时间排序
-            events.sort(key=lambda x: x['start_time'])
+            # 按时间排序；同一时间戳优先释放再按下，避免抑制快速重按
+            try:
+                events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+            except Exception:
+                events.sort(key=lambda x: x['start_time'])
+            if self.debug and events:
+                self.logger.log(f"[DEBUG] 解析后事件数: {len(events)}，示例: {events[:5]}", "DEBUG")
 
-            if bool(self.options.get('enable_quantize', True)):
-                grid_ms = int(self.options.get('quantize_grid_ms', 30))
-                events = midi_tools.quantize_events(events, grid_ms=max(1, grid_ms))
-            if self.debug:
-                if events:
-                    self.logger.log(f"[DEBUG] 事件样例: {events[:3]}", "DEBUG")
-                self.logger.log(f"[DEBUG] MIDI解析完成: {len(events)} 个事件", "DEBUG")
-            else:
-                self.logger.log(f"MIDI解析完成: {len(events)} 个事件", "INFO")
             return events
-            
         except Exception as e:
-            self.logger.log(f"MIDI文件解析失败: {str(e)}", "ERROR")
+            # 兜底：解析过程中出现异常
+            try:
+                self._handle_error(f"MIDI解析失败: {str(e)}")
+            except Exception:
+                pass
             return []
     
     def _get_default_key_mapping(self) -> Dict[str, str]:
-        """获取默认键盘映射 - 21键系统"""
-        return {
-            # 低音区 (L1-L7): a, s, d, f, g, h, j
-            'L1': 'a', 'L2': 's', 'L3': 'd', 'L4': 'f', 'L5': 'g', 'L6': 'h', 'L7': 'j',
-            
-            # 中音区 (M1-M7): q, w, e, r, t, y, u  
-            'M1': 'q', 'M2': 'w', 'M3': 'e', 'M4': 'r', 'M5': 't', 'M6': 'y', 'M7': 'u',
-            
-            # 高音区 (H1-H7): 1, 2, 3, 4, 5, 6, 7
-            'H1': '1', 'H2': '2', 'H3': '3', 'H4': '4', 'H5': '5', 'H6': '6', 'H7': '7'
-        }
+        """获取默认21键位映射（委托到 keymaps.get_default_mapping）。"""
+        try:
+            return get_default_mapping()
+        except Exception:
+            return {}
+    
+    def _generate_chord_accompaniment(self, events: List[Dict[str, Any]], key_mapping: Dict[str, str], strategy_name: Optional[str]) -> List[Dict[str, Any]]:
+        """根据已映射的旋律事件生成"后处理"和弦伴奏事件。
+        规则：
+        - 不修改/替换原旋律事件，只追加固定和弦键位(z,x,c,v,b,n,m)的按下/抬起事件。
+        - 和弦识别支持 triad7/triad/greedy 三种模式（来自 self.options['chord_accomp_mode']）。
+        - 使用贪心或完整匹配，按时间对音级集合进行段切分，并应用最小延音阈值。
+        """
+        try:
+            if not events:
+                return []
+
+            # 固定和弦键映射与模式优先顺序
+            chord_key_map: Dict[str, str] = {
+                'C': 'z', 'Dm': 'x', 'Em': 'c', 'F': 'v', 'G': 'b', 'Am': 'n', 'G7': 'm'
+            }
+            chord_patterns: Dict[str, set] = {
+                'G7': {7, 11, 2, 5},
+                'C': {0, 4, 7},
+                'Dm': {2, 5, 9},
+                'Em': {4, 7, 11},
+                'F': {5, 9, 0},
+                'G': {7, 11, 2},
+                'Am': {9, 0, 4},
+            }
+            priority = ['G7', 'C', 'Dm', 'Em', 'F', 'G', 'Am']
+
+            mode = str(self.options.get('chord_accomp_mode', 'triad')).lower()
+            min_sustain = max(0.0, float(self.options.get('chord_accomp_min_sustain_ms', 120)) / 1000.0)
+
+            # 事件需按时间有序；同一时间戳 note_off 优先
+            try:
+                events_sorted = sorted(events, key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+            except Exception:
+                events_sorted = list(events)
+
+            # 统计当前激活的音级计数
+            pc_counts: Dict[int, int] = {}
+
+            # 当前和弦段信息
+            current_name: Optional[str] = None
+            segment_start: Optional[float] = None
+
+            accomp: List[Dict[str, Any]] = []
+
+            def detect_from_pcs(pcs: set) -> Optional[str]:
+                if not pcs:
+                    return None
+                if mode == 'triad7':
+                    # 先七和弦，再三和弦（完整子集）
+                    for name in priority:
+                        patt = chord_patterns[name]
+                        if patt.issubset(pcs):
+                            return name
+                    return None
+                if mode == 'triad':
+                    for name in [n for n in priority if n != 'G7']:
+                        patt = chord_patterns[name]
+                        if patt.issubset(pcs):
+                            return name
+                    return None
+                # greedy：交集最多且>=2，平局按 priority
+                best_name = None
+                best_size = 0
+                for name in priority:
+                    patt = chord_patterns[name]
+                    inter = patt.intersection(pcs)
+                    sz = len(inter)
+                    if sz >= 2 and sz > best_size:
+                        best_size = sz
+                        best_name = name
+                return best_name
+
+            def close_segment(name: Optional[str], start_t: Optional[float], end_t: float):
+                if not name or start_t is None:
+                    return
+                key = chord_key_map.get(name)
+                if not key:
+                    return
+                on_t = start_t
+                off_t = max(end_t, start_t + min_sustain)
+                accomp.append({'start_time': on_t, 'type': 'note_on', 'key': key, 'velocity': 64, 'channel': 0, 'note': None})
+                accomp.append({'start_time': off_t, 'type': 'note_off', 'key': key, 'velocity': 0, 'channel': 0, 'note': None})
+
+            # 扫描时间线，遇到事件变更时更新 pcs -> 识别和弦 -> 段切换
+            last_time = None
+            for ev in events_sorted:
+                t = float(ev.get('start_time', 0.0))
+                typ = ev.get('type')
+                note = ev.get('note', None)
+
+                # 在时间推进到 t 前，基于当前 pcs 决定是否需要关闭段（若和弦名将变更）
+                # 实际上，先处理事件变更再判断更准确：先更新 pc_counts，再基于新状态检测
+
+                # 更新 pc_counts
+                if note is not None:
+                    pc = int(note) % 12
+                    if typ == 'note_on':
+                        pc_counts[pc] = pc_counts.get(pc, 0) + 1
+                    elif typ == 'note_off':
+                        if pc in pc_counts:
+                            pc_counts[pc] = max(0, pc_counts[pc] - 1)
+                            if pc_counts[pc] == 0:
+                                del pc_counts[pc]
+
+                # 仅在时间点变化后进行识别与段切换
+                if last_time is None or t != last_time:
+                    pcs = set(pc_counts.keys())
+                    detected = detect_from_pcs(pcs)
+                    if detected != current_name:
+                        # 关闭旧段
+                        if current_name is not None and segment_start is not None:
+                            close_segment(current_name, segment_start, last_time if last_time is not None else t)
+                        # 开启新段
+                        current_name = detected
+                        segment_start = t if detected is not None else None
+                    last_time = t
+
+            # 收尾：直到最后一个事件时间
+            final_time = events_sorted[-1]['start_time'] if events_sorted else 0.0
+            if current_name is not None and segment_start is not None:
+                close_segment(current_name, segment_start, float(final_time))
+
+            # 内部排序，note_off 优先
+            try:
+                accomp.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+            except Exception:
+                accomp.sort(key=lambda x: x['start_time'])
+
+            if self.debug:
+                try:
+                    self.logger.log(f"[DEBUG] 和弦伴奏段数: {len(accomp)//2}, 追加事件: {len(accomp)}", "DEBUG")
+                except Exception:
+                    pass
+
+            return accomp
+        except Exception:
+            return []
     
     def _map_midi_note_to_key(self, midi_note: int, key_mapping: Dict[str, str]) -> Optional[str]:
         """将MIDI音符映射到固定21键(L/M/H x 1..7)，半音采用就近度数映射。

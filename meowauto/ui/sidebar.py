@@ -33,6 +33,9 @@ class Sidebar:
         btn_ys = ttk.Button(self._container, text="原神", width=12, command=lambda: self.on_action("game-yuanshen"))
         btn_ys.pack(padx=6, pady=0, fill=tk.X)
         self._game_buttons.append(btn_ys)
+        btn_sky = ttk.Button(self._container, text="光遇", width=12, command=lambda: self.on_action("game-sky"))
+        btn_sky.pack(padx=6, pady=4, fill=tk.X)
+        self._game_buttons.append(btn_sky)
 
         ttk.Separator(self._container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 4))
 
