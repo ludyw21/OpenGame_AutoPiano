@@ -18,8 +18,6 @@ from ui_manager import UIManager
 from meowauto.midi import analyzer, groups
 from meowauto.ui.sidebar import Sidebar
 from meowauto.ui.yuanshen import YuanShenPage
-from meowauto.config.key_mapping_manager import KeyMappingManager
-from meowauto.ui.keymap_editor import KeymapEditor
 
 
 class MeowFieldAutoPiano:
@@ -58,11 +56,6 @@ class MeowFieldAutoPiano:
         self._create_ui_components()
         # 创建并对接侧边栏（默认展开，保持可见）
         self._create_sidebar_window()
-        # 键位映射管理器
-        try:
-            self.keymap_manager = KeyMappingManager()
-        except Exception:
-            self.keymap_manager = None
         
         # 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -405,13 +398,6 @@ class MeowFieldAutoPiano:
                 self._switch_game('开放空间')
             elif key == 'game-yuanshen':
                 self._switch_game('原神')
-            elif key == 'keymap':
-                try:
-                    if self.keymap_manager is None:
-                        self.keymap_manager = KeyMappingManager()
-                    KeymapEditor(self.root, self.keymap_manager)
-                except Exception as e:
-                    self._log_message(f"打开键位映射编辑器失败: {e}", "ERROR")
             elif key == 'about':
                 self._show_about()
             # 其他功能键可在此扩展

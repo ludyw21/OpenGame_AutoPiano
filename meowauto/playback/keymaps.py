@@ -49,3 +49,54 @@ def get_game_key_mapping(game_name: str | None) -> Dict[str, str]:
         return get_default_mapping()
 
 
+# ====== 方案A：游戏配置注册表与统一查询 ======
+
+class GameProfile:
+    """游戏配置：布局/策略/映射等元信息。"""
+    def __init__(self, name: str, layout: str, strategy: str, mapping: Dict[str, str]):
+        self.name = name
+        self.layout = layout           # e.g. "21-key" / "3x5"
+        self.strategy = strategy       # e.g. "strategy_21key" / "strategy_3x5"
+        self.mapping = mapping         # 键位映射表
+
+
+# 预置注册表：集中管理各游戏映射与策略
+GAME_REGISTRY: Dict[str, GameProfile] = {
+    '开放空间': GameProfile(
+        name='开放空间', layout='21-key', strategy='strategy_21key', mapping=get_default_mapping()
+    ),
+    '原神': GameProfile(
+        name='原神', layout='21-key', strategy='strategy_21key', mapping=get_genshin_mapping()
+    ),
+    # 占位：3x5 布局（后续完善具体映射与策略细节）
+    '光遇': GameProfile(
+        name='光遇', layout='3x5', strategy='strategy_3x5', mapping={
+            # 3x5 共15键占位映射（示例：按行/列命名 K1..K15 -> 自定义键位）
+            # 后续可根据真实按键需求进行完善与本地化命名
+            'K1': '1', 'K2': '2', 'K3': '3', 'K4': '4', 'K5': '5',
+            'K6': 'q', 'K7': 'w', 'K8': 'e', 'K9': 'r', 'K10': 't',
+            'K11': 'a', 'K12': 's', 'K13': 'd', 'K14': 'f', 'K15': 'g',
+        }
+    ),
+}
+
+
+def get_game_profile(game_name: str | None) -> GameProfile:
+    """按名称获取游戏配置，失败回退到“开放空间”。"""
+    try:
+        name = (game_name or '').strip()
+        if name in GAME_REGISTRY:
+            return GAME_REGISTRY[name]
+    except Exception:
+        pass
+    return GAME_REGISTRY['开放空间']
+
+
+def get_mapping_for_game(game_name: str | None) -> Dict[str, str]:
+    return get_game_profile(game_name).mapping
+
+
+def get_strategy_for_game(game_name: str | None) -> str:
+    return get_game_profile(game_name).strategy
+
+
