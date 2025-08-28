@@ -19,6 +19,7 @@ from meowauto.midi import analyzer, groups
 from meowauto.ui.sidebar import Sidebar
 from meowauto.ui.yuanshen import YuanShenPage
 from meowauto.ui.sky import SkyPage
+from meowauto.core.playlist_manager import PlaylistManager
 
 
 class MeowFieldAutoPiano:
@@ -75,6 +76,11 @@ class MeowFieldAutoPiano:
         self.event_bus.publish(Events.SYSTEM_READY, {'version': '1.0.5'}, 'App')
         # 初始化标题后缀
         self._update_titles_suffix(self.current_game)
+        # 播放列表管理器
+        try:
+            self.playlist = PlaylistManager()
+        except Exception:
+            self.playlist = None
     
     def _set_window_icon(self):
         """设置窗口图标"""
@@ -671,8 +677,17 @@ class MeowFieldAutoPiano:
             ttk.Button(playlist_toolbar, text="清空列表", command=self._clear_playlist).pack(side=tk.LEFT)
             ttk.Label(playlist_toolbar, text="播放顺序:").pack(side=tk.LEFT, padx=(12, 4))
             self.playlist_order_var = tk.StringVar(value="顺序")
-            ttk.Combobox(playlist_toolbar, textvariable=self.playlist_order_var, state="readonly", width=10,
-                         values=["顺序", "随机", "单曲循环", "列表循环"]).pack(side=tk.LEFT)
+            self._playlist_order_combo = ttk.Combobox(playlist_toolbar, textvariable=self.playlist_order_var, state="readonly", width=10,
+                         values=["顺序", "随机", "单曲循环", "列表循环"])
+            self._playlist_order_combo.pack(side=tk.LEFT)
+            # 绑定模式到管理器
+            def _on_order_changed(event=None):
+                try:
+                    if getattr(self, 'playlist', None):
+                        self.playlist.set_order_mode(self.playlist_order_var.get())
+                except Exception:
+                    pass
+            self._playlist_order_combo.bind('<<ComboboxSelected>>', _on_order_changed)
 
             # 播放列表显示区域
             playlist_display = ttk.Frame(playlist_container)
@@ -1587,10 +1602,6 @@ class MeowFieldAutoPiano:
             if hasattr(self, 'auto_player') and self.auto_player and self.auto_player.is_playing:
                 self._log_message("自动演奏已在进行中", "WARNING")
                 return
-            # 检查按钮状态
-            if self.auto_play_button.cget("text") == "停止弹琴":
-                self._log_message("自动演奏已在进行中", "WARNING")
-                return
             # 直接进入MIDI播放
             self._start_midi_play()
         except Exception as e:
@@ -1741,15 +1752,36 @@ class MeowFieldAutoPiano:
                     self.ui_manager.set_status(f"自动弹琴已开始: {file_name}")
                     self._log_message(f"开始自动弹琴: {file_name} ({file_type})", "SUCCESS")
                     
-                    # 更新播放列表状态（如果是从播放列表播放的）
-                    if not midi_path == self.midi_path_var.get():
+                    # 更新播放列表状态（统一设置为正在播放）
+                    try:
                         selected = self.playlist_tree.selection()
                         if selected:
                             self.playlist_tree.set(selected[0], "状态", "正在播放")
+                    except Exception:
+                        pass
                     
                     # 进度由真实回调驱动
+                    # 启动自动连播watchdog兜底
+                    try:
+                        self._schedule_auto_next_watchdog()
+                    except Exception:
+                        pass
                 else:
-                    self._log_message("自动演奏启动失败", "ERROR")
+                    # 启动失败：标记状态并自动跳过到下一首，避免停滞
+                    self._log_message("自动演奏启动失败，自动跳过到下一首", "ERROR")
+                    try:
+                        selected = self.playlist_tree.selection()
+                        if selected:
+                            self.playlist_tree.set(selected[0], "状态", "错误")
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, 'root'):
+                            self.root.after(60, self._play_next)
+                        else:
+                            self._play_next()
+                    except Exception:
+                        pass
                     
             except ImportError as e:
                 # 如果自动演奏模块不可用，使用模拟模式
@@ -1762,12 +1794,19 @@ class MeowFieldAutoPiano:
                 self._log_message(f"开始自动弹琴: {file_name} ({file_type})", "SUCCESS")
                 
                 # 更新播放列表状态（如果是从播放列表播放的）
-                if not midi_path == self.midi_path_var.get():
+                try:
                     selected = self.playlist_tree.selection()
                     if selected:
                         self.playlist_tree.set(selected[0], "状态", "正在播放")
+                except Exception:
+                    pass
                 
                 # 进度由真实回调驱动
+                # 启动自动连播watchdog兜底
+                try:
+                    self._schedule_auto_next_watchdog()
+                except Exception:
+                    pass
             
         except Exception as e:
             self._log_message(f"MIDI模式演奏失败: {str(e)}", "ERROR")
@@ -1790,6 +1829,11 @@ class MeowFieldAutoPiano:
             self.pause_button.configure(text="暂停", state="disabled")
             self.ui_manager.set_status("自动弹琴已停止")
             self._log_message("自动弹琴已停止")
+            # 关闭watchdog
+            try:
+                self._cancel_auto_next_watchdog()
+            except Exception:
+                pass
             
             # 无进度模拟逻辑
             
@@ -1834,11 +1878,26 @@ class MeowFieldAutoPiano:
         """播放完成处理"""
         self._log_message("播放完成", "SUCCESS")
         self.ui_manager.set_status("播放完成")
+        # 防抖：标记已由完成回调触发，避免watchdog重复触发
+        try:
+            setattr(self, '_auto_next_guard', True)
+            if hasattr(self, 'root'):
+                self.root.after(2000, lambda: setattr(self, '_auto_next_guard', False))
+        except Exception:
+            pass
+        # 将当前选中的播放列表项标记为已播放
+        try:
+            selected = self.playlist_tree.selection()
+            if selected:
+                self.playlist_tree.set(selected[0], "状态", "已播放")
+        except Exception:
+            pass
         
         # 自动播放下一首
         try:
+            # 给 AutoPlayer 状态落盘与线程退出一点缓冲
             if hasattr(self, 'root'):
-                self.root.after(0, self._play_next)
+                self.root.after(120, self._play_next)
             else:
                 self._play_next()
         except Exception:
@@ -1850,57 +1909,76 @@ class MeowFieldAutoPiano:
             if not all_items:
                 self._stop_auto_play()
                 return
-            order = getattr(self, 'playlist_order_var', tk.StringVar(value="顺序")).get()
-            current_selected = self.playlist_tree.selection()
-            if order == "单曲循环" and current_selected:
-                # 重新播放当前
-                if hasattr(self, 'root'):
-                    self.root.after(0, self._play_selected_playlist_item)
-                else:
-                    self._play_selected_playlist_item()
+            # 同步当前索引至管理器
+            try:
+                cur_idx = self._get_selected_playlist_index()
+                if cur_idx is not None and getattr(self, 'playlist', None):
+                    self.playlist.select_index(cur_idx)
+                    # 确保模式与UI一致
+                    self.playlist.set_order_mode(self.playlist_order_var.get())
+                self._log_message(f"[NEXT] 当前索引={cur_idx} 模式={getattr(self, 'playlist_order_var', tk.StringVar(value='顺序')).get()}", "INFO")
+            except Exception:
+                pass
+            # 询问管理器下一首
+            next_idx = None
+            if getattr(self, 'playlist', None):
+                next_idx = self.playlist.next_index()
+            self._log_message(f"[NEXT] 计算下一首索引={next_idx}", "INFO")
+            # 顺序模式且到末尾
+            if next_idx is None:
+                self._stop_auto_play()
                 return
-            if order == "随机":
-                import random
-                if current_selected and len(all_items) > 1:
-                    candidates = [i for i in all_items if i != current_selected[0]]
-                    next_item = random.choice(candidates)
-                else:
-                    next_item = random.choice(all_items)
-                self.playlist_tree.selection_set(next_item)
-                if hasattr(self, 'root'):
-                    self.root.after(0, self._play_selected_playlist_item)
-                else:
-                    self._play_selected_playlist_item()
-                return
-            if current_selected:
-                current_index = list(all_items).index(current_selected[0])
-                if order == "列表循环":
-                    next_index = (current_index + 1) % len(all_items)
-                    self.playlist_tree.selection_set(all_items[next_index])
-                    if hasattr(self, 'root'):
-                        self.root.after(0, self._play_selected_playlist_item)
-                    else:
-                        self._play_selected_playlist_item()
-                else:
-                    # 顺序：末尾停止
-                    if current_index + 1 >= len(all_items):
-                        self._stop_auto_play()
-                        return
-                    next_index = current_index + 1
-                    self.playlist_tree.selection_set(all_items[next_index])
-                    if hasattr(self, 'root'):
-                        self.root.after(0, self._play_selected_playlist_item)
-                    else:
-                        self._play_selected_playlist_item()
+            # 选中并播放
+            self._select_playlist_index(next_idx)
+            if hasattr(self, 'root'):
+                self.root.after(0, self._play_selected_playlist_item)
             else:
-                self.playlist_tree.selection_set(all_items[0])
-                if hasattr(self, 'root'):
-                    self.root.after(0, self._play_selected_playlist_item)
-                else:
-                    self._play_selected_playlist_item()
+                self._play_selected_playlist_item()
         except Exception as e:
             self._log_message(f"播放下一首失败: {str(e)}", "ERROR")
             self._stop_auto_play()
+
+    def _schedule_auto_next_watchdog(self):
+        """启动自动连播兜底检测：当AutoPlayer自然结束但未触发完成回调时，主动切下一首。"""
+        try:
+            # 先取消已有的
+            self._cancel_auto_next_watchdog()
+            # 初始化前一状态为正在播放，避免启动瞬间误触发
+            self._auto_watch_prev_state = True
+            def _tick():
+                try:
+                    playing = bool(getattr(self, 'auto_player', None) and self.auto_player.is_playing)
+                    guard = bool(getattr(self, '_auto_next_guard', False))
+                    if not playing and self._auto_watch_prev_state and not guard:
+                        # 从 播放中 -> 非播放 且 未由完成回调触发，认为自然完成，兜底触发
+                        self._log_message("[WD] 检测到播放结束，兜底触发自动下一首", "INFO")
+                        self._on_playback_complete()
+                        return
+                    self._auto_watch_prev_state = playing
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if hasattr(self, 'root'):
+                            self._auto_next_watchdog_id = self.root.after(700, _tick)
+                    except Exception:
+                        pass
+            if hasattr(self, 'root'):
+                self._auto_next_watchdog_id = self.root.after(700, _tick)
+        except Exception:
+            pass
+
+    def _cancel_auto_next_watchdog(self):
+        """停止自动连播兜底检测"""
+        try:
+            if hasattr(self, '_auto_next_watchdog_id') and self._auto_next_watchdog_id and hasattr(self, 'root'):
+                try:
+                    self.root.after_cancel(self._auto_next_watchdog_id)
+                except Exception:
+                    pass
+            self._auto_next_watchdog_id = None
+        except Exception:
+            pass
 
     def _play_selected_playlist_item(self):
         """根据播放列表当前选择，设置模式/路径，必要时解析，然后开始自动播放"""
@@ -1921,6 +1999,18 @@ class MeowFieldAutoPiano:
                 full_path = None
             if not full_path:
                 full_path = filename
+            # 日志增强
+            try:
+                self._log_message(f"[PLAY] 选择项ID={item_id} 文件={filename} 路径={full_path} 类型={ftype}", "INFO")
+            except Exception:
+                pass
+            # 同步当前索引到管理器
+            try:
+                idx = self._get_selected_playlist_index()
+                if idx is not None and getattr(self, 'playlist', None):
+                    self.playlist.select_index(idx)
+            except Exception:
+                pass
             if ftype == "MIDI文件" and full_path:
                 self.playback_mode.set("midi")
                 self.midi_path_var.set(full_path)
@@ -1929,7 +2019,26 @@ class MeowFieldAutoPiano:
                     self._analyze_current_midi()
                 except Exception as e:
                     self._log_message(f"解析失败: {e}", "ERROR")
-                self._start_auto_play()
+                # 若仍在播放，先停止，避免“仍在播放”导致无法启动下一首
+                try:
+                    if hasattr(self, 'auto_player') and self.auto_player and self.auto_player.is_playing:
+                        self._log_message("检测到仍在播放，先停止当前演奏以切换下一首", "INFO")
+                        self.auto_player.stop_auto_play()
+                except Exception:
+                    pass
+                # 稍作延迟以确保线程完全退出
+                try:
+                    if hasattr(self, 'root'):
+                        self.root.after(50, self._start_midi_play)
+                    else:
+                        self._start_midi_play()
+                except Exception:
+                    self._start_midi_play()
+                # 更新播放列表状态
+                try:
+                    self.playlist_tree.set(item_id, "状态", "正在播放")
+                except Exception:
+                    pass
             else:
                 self._log_message(f"不支持的文件类型: {filename}", "WARNING")
         except Exception as e:
@@ -2117,6 +2226,11 @@ class MeowFieldAutoPiano:
             selected = self.playlist_tree.selection()
             if selected:
                 self.playlist_tree.set(selected[0], "状态", "已停止")
+            # 关闭watchdog
+            try:
+                self._cancel_auto_next_watchdog()
+            except Exception:
+                pass
             
         except Exception as e:
             self._log_message(f"停止播放失败: {str(e)}", "ERROR")
@@ -2256,6 +2370,12 @@ class MeowFieldAutoPiano:
             # 将完整路径存储到字典中
             self._file_paths[item_id] = abspath
             self._log_message(f"已添加到播放列表: {file_name}")
+            # 同步到管理器
+            try:
+                if getattr(self, 'playlist', None):
+                    self.playlist.add_files([abspath], ftype=file_type)
+            except Exception:
+                pass
             return True
         except Exception as e:
             self._log_message(f"添加文件到播放列表失败: {str(e)}", "ERROR")
@@ -2314,7 +2434,11 @@ class MeowFieldAutoPiano:
         """从播放列表移除文件"""
         selected = self.playlist_tree.selection()
         if selected:
-            for item in selected:
+            # 计算被选中的索引并倒序删除
+            all_items = list(self.playlist_tree.get_children())
+            indices = sorted([all_items.index(i) for i in selected if i in all_items], reverse=True)
+            for idx in indices:
+                item = all_items[idx]
                 item_data = self.playlist_tree.item(item)
                 file_name = item_data['values'][1] if item_data['values'] else "未知文件"
                 self.playlist_tree.delete(item)
@@ -2325,7 +2449,12 @@ class MeowFieldAutoPiano:
                         del self._file_paths[item]
                 except Exception:
                     pass
-            
+            # 同步到管理器
+            try:
+                if getattr(self, 'playlist', None):
+                    self.playlist.remove_by_indices(indices)
+            except Exception:
+                pass
             # 重新编号
             self._refresh_playlist_indices()
         else:
@@ -2339,6 +2468,11 @@ class MeowFieldAutoPiano:
             if hasattr(self, '_file_paths'):
                 self._file_paths.clear()
             self._refresh_playlist_indices()
+            try:
+                if getattr(self, 'playlist', None):
+                    self.playlist.clear()
+            except Exception:
+                pass
 
     def _refresh_playlist_indices(self):
         """刷新播放列表序号列"""
@@ -2382,6 +2516,26 @@ class MeowFieldAutoPiano:
     def _on_playlist_double_click(self, event):
         """播放列表双击事件"""
         self._play_selected_playlist_item()
+
+    # —— 播放列表辅助方法 ——
+    def _get_selected_playlist_index(self) -> Optional[int]:
+        try:
+            selected = self.playlist_tree.selection()
+            if not selected:
+                return None
+            all_items = list(self.playlist_tree.get_children())
+            return all_items.index(selected[0]) if selected[0] in all_items else None
+        except Exception:
+            return None
+
+    def _select_playlist_index(self, index: int) -> None:
+        try:
+            all_items = list(self.playlist_tree.get_children())
+            if 0 <= index < len(all_items):
+                self.playlist_tree.selection_set(all_items[index])
+                self.playlist_tree.see(all_items[index])
+        except Exception:
+            pass
 
     # ===== 预处理移调工具 =====
     def _transpose_notes(self, notes, semitone):
