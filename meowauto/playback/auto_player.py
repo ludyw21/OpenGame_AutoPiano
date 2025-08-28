@@ -34,7 +34,7 @@ class AutoPlayer:
             'spin_threshold_ms': 1,            # 忙等阈值（最后阶段改为忙等，保证更精准触发）
             'post_action_sleep_ms': 0,         # 每批动作后的微停，0 表示不强制微停
             # 可选：和弦伴奏（附加映射事件，不改原事件）
-            'enable_chord_accomp': False,      # 启用和弦伴奏（默认关闭）
+            'enable_chord_accomp': True,       # 启用和弦伴奏（默认开启）
             'chord_accomp_mode': 'triad',      # triad/triad7/greedy
             'chord_accomp_min_sustain_ms': 120,# 伴奏最小延音阈值（毫秒）
             # MIDI 预处理

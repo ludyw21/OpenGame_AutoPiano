@@ -28,7 +28,8 @@ class MeowFieldAutoPiano:
         """初始化应用程序"""
         # 创建主窗口
         self.root = tk.Tk()
-        self.root.title("MeowField AutoPiano v1.0.4")
+        # 主窗口标题仅显示当前游戏名（初始为“开放空间”）
+        self.root.title("开放空间")
         self.root.geometry("1600x980")
         self.root.resizable(True, True)
         
@@ -71,7 +72,7 @@ class MeowFieldAutoPiano:
         except Exception:
             pass
         # 发布系统就绪事件
-        self.event_bus.publish(Events.SYSTEM_READY, {'version': '1.0.4'}, 'App')
+        self.event_bus.publish(Events.SYSTEM_READY, {'version': '1.0.5'}, 'App')
         # 初始化标题后缀
         self._update_titles_suffix(self.current_game)
     
@@ -231,10 +232,7 @@ class MeowFieldAutoPiano:
         except Exception as e:
             error_msg = f"创建UI组件失败: {e}"
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': error_msg}, 'App')
-        
-        # 添加测试数据到播放列表
-        self._add_test_playlist_data()
-
+    
     def _create_sidebar_window(self):
         """创建左侧可折叠的悬浮侧边栏窗口，并与主窗体联动"""
         try:
@@ -530,8 +528,8 @@ class MeowFieldAutoPiano:
             if hasattr(self, 'ui_manager') and hasattr(self.ui_manager, 'set_title_suffix'):
                 self.ui_manager.set_title_suffix(suffix)
             # 同步根窗口标题
-            base = "MeowField AutoPiano v1.0.4"
-            self.root.title(f"{base} [{suffix}]") if suffix else self.root.title(base)
+            # 简化：仅显示游戏名（无版本号和方括号）
+            self.root.title(suffix if suffix else "开放空间")
         except Exception:
             pass
     
@@ -907,7 +905,8 @@ class MeowFieldAutoPiano:
             # 后处理：和弦伴奏设置（固定追加键，不改变旋律）
             accom_frame = ttk.LabelFrame(settings_inner, text="和弦伴奏(后处理)", padding="8")
             accom_frame.pack(fill=tk.X, padx=6, pady=(0,6))
-            self.enable_chord_accomp_var = tk.BooleanVar(value=False)
+            # 与默认行为一致：默认开启和弦伴奏
+            self.enable_chord_accomp_var = tk.BooleanVar(value=True)
             ttk.Checkbutton(
                 accom_frame,
                 text="启用和弦伴奏 (固定键: z,x,c,v,b,n,m)",
@@ -915,13 +914,20 @@ class MeowFieldAutoPiano:
                 command=self._on_player_options_changed,
             ).grid(row=0, column=0, columnspan=2, sticky=tk.W)
             ttk.Label(accom_frame, text="模式").grid(row=0, column=2, sticky=tk.W, padx=(12,0))
-            self.chord_accomp_mode_var = tk.StringVar(value="greedy")
-            ttk.Combobox(
+            # 默认模式与后端保持一致：triad
+            self.chord_accomp_mode_var = tk.StringVar(value="triad")
+            mode_combo = ttk.Combobox(
                 accom_frame,
                 textvariable=self.chord_accomp_mode_var,
                 state="readonly",
                 values=["triad7", "triad", "greedy"],
-            ).grid(row=0, column=3, sticky=tk.W)
+            )
+            mode_combo.grid(row=0, column=3, sticky=tk.W)
+            # 模式变化时也实时同步到 AutoPlayer
+            try:
+                mode_combo.bind('<<ComboboxSelected>>', lambda e: self._on_player_options_changed())
+            except Exception:
+                pass
             ttk.Label(accom_frame, text="最小延音(ms)").grid(row=0, column=4, sticky=tk.W, padx=(12,0))
             self.chord_accomp_min_sustain_var = tk.IntVar(value=120)
             ttk.Spinbox(
@@ -2170,6 +2176,7 @@ class MeowFieldAutoPiano:
                 self._log_message("MIDI播放失败", "ERROR")
                 self.ui_manager.set_status("MIDI播放失败")
                 messagebox.showerror("错误", "MIDI播放失败，请检查文件格式")
+                
         except ImportError:
             self._log_message("MIDI播放模块不可用", "ERROR")
             messagebox.showerror("错误", "MIDI播放模块不可用，请检查meowauto模块")

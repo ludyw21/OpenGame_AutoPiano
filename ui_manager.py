@@ -79,8 +79,9 @@ class UIManager:
         
         # 标题
         title_font = ("Microsoft YaHei", 18, "bold")
-        self._base_title = "🎹 MeowField AutoPiano v1.0.4"
-        self.title_label = ttk.Label(title_frame, text=self._base_title, font=title_font)
+        # 只显示游戏名（由 App 通过 set_title_suffix 传入），默认显示“开放空间”
+        self._base_title = ""
+        self.title_label = ttk.Label(title_frame, text="开放空间", font=title_font)
         self.title_label.pack(side=tk.LEFT)
         
         # 外观控制
@@ -175,9 +176,8 @@ class UIManager:
     def set_title_suffix(self, suffix: str | None):
         """设置标题后缀（例如当前游戏名）"""
         try:
-            text = self._base_title
-            if suffix:
-                text = f"{text} [{suffix}]"
+            # 简化：仅显示游戏名
+            text = suffix if (suffix and suffix.strip()) else "开放空间"
             if hasattr(self, 'title_label'):
                 self.title_label.configure(text=text)
         except Exception:
