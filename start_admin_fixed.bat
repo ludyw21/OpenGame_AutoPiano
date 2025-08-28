@@ -1,13 +1,14 @@
 @echo off
 chcp 65001 >nul
-title MeowField AutoPiano v1.0.2 - 管理员模式 (修复版)
+title MeowField AutoPiano v1.0.5 - 管理员模式 (修复版)
 
 echo.
 echo ========================================
-echo    MeowField AutoPiano v1.0.2
+echo    MeowField AutoPiano v1.0.5
 echo    管理员模式启动脚本 (修复版)
 echo ========================================
 echo.
+echo 本软件免费使用，如果你是从其他地方购入说明你已经受骗。请联系b站up主薮薮猫猫举报。
 
 :: 切换到脚本所在目录
 cd /d "%~dp0"

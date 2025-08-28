@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MeowField AutoPiano v1.0.2
+MeowField AutoPiano v1.0.5
 主程序入口点
 
 这是一个高度模块化的自动钢琴应用程序，支持：
@@ -75,7 +75,8 @@ def check_dependencies():
 
 def main():
     """主函数"""
-    print("🎹 MeowField AutoPiano v1.0.2")
+    print("🎹 MeowField AutoPiano v1.0.5")
+    print("本软件免费使用，如果你是从其他地方购入说明你已经受骗。请联系b站up主薮薮猫猫举报。")
     print("正在启动...")
     
     # 设置环境

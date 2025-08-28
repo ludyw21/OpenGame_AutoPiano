@@ -984,7 +984,8 @@ class MeowFieldAutoPiano:
             self.log_text = tk.Text(tab_logs, height=20, width=50)
             self.log_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0,6))
             # 初始日志
-            self.log_text.insert(tk.END, "🎹 MeowField AutoPiano v1.0.2 启动成功\n")
+            self.log_text.insert(tk.END, "🎹 MeowField AutoPiano v1.0.5 启动成功\n")
+            self.log_text.insert(tk.END, "本软件免费使用，如果你是从其他地方购入说明你已经受骗。请联系b站up主薮薮猫猫举报。\n")
             self.log_text.insert(tk.END, "支持功能: MP3转MIDI、MIDI播放、自动弹琴、批量转换\n")
             self.log_text.insert(tk.END, "=" * 50 + "\n")
             self.log_text.insert(tk.END, "系统就绪，可以开始使用...\n")
