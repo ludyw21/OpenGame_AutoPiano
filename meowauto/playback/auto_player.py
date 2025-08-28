@@ -5,7 +5,7 @@
 
 import time
 import threading
-from typing import List, Optional, Callable, Dict, Any
+from typing import List, Optional, Callable, Dict, Any, Tuple
 from meowauto.utils import midi_tools
 from meowauto.core import Event, KeySender, Logger
 from meowauto.playback.strategies import get_strategy
@@ -31,19 +31,17 @@ class AutoPlayer:
             'retrigger_min_gap_ms': 40,        # 重触发的最小时间间隔
             'epsilon_ms': 6,                   # 批处理窗口大小（毫秒）
             'send_ahead_ms': 0,                # 提前量（0 = 不提前，严格与事件时间对齐）
-            'spin_threshold_ms': 1,            # 忙等阈值（最后阶段改为忙等，保证更精准触发）
-            'post_action_sleep_ms': 0,         # 每批动作后的微停，0 表示不强制微停
-            # 可选：和弦伴奏（附加映射事件，不改原事件）
-            'enable_chord_accomp': True,       # 启用和弦伴奏（默认开启）
-            'chord_accomp_mode': 'triad',      # triad/triad7/greedy
-            'chord_accomp_min_sustain_ms': 120,# 伴奏最小延音阈值（毫秒）
-            # MIDI 预处理
-            'enable_quantize': False,          # 启用时间量化（默认关闭，保证“所见即所得”的时间）
-            'quantize_grid_ms': 30,            # 量化栅格（毫秒）
-            'enable_black_transpose': True,    # 启用黑键移调
-            'black_transpose_strategy': 'down', # 移调策略：down/nearest
-            # 键位映射策略
-            'enable_key_fallback': True        # 启用21键映射的强化回退策略
+            'spin_threshold_ms': 1,            # 忙等切换阈值
+            'post_action_sleep_ms': 0,         # 每次发按键后追加微睡眠
+            'enable_chord_accomp': True,       # 启用和弦伴奏
+            'chord_accomp_mode': 'triad',
+            'chord_accomp_min_sustain_ms': 120,
+            'enable_quantize': False,
+            'quantize_grid_ms': 30,
+            'enable_black_transpose': True,
+            'black_transpose_strategy': 'nearest',
+            'enable_key_fallback': True,
+            'tap_gap_ms': 0
         }
         self.playback_callbacks = {
             'on_start': None,
@@ -188,15 +186,20 @@ class AutoPlayer:
             except Exception:
                 pass
 
-        if not events:
-            self.logger.log("展开后的回放事件为空", "ERROR")
-            return False
-
+        # 预处理：同键延长音并集 + tap（release->press，gap 可为 0ms）
+        try:
+            events = self._apply_union_and_tap(events)
+        except Exception:
+            pass
         # 对同一时间戳，保证 note_off 先于 note_on
         try:
             events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
         except Exception:
             pass
+
+        if not events:
+            self.logger.log("展开后的回放事件为空", "ERROR")
+            return False
 
         # 设置状态并启动线程
         self.current_tempo = tempo
@@ -397,6 +400,7 @@ class AutoPlayer:
                 while self.is_playing and not self.is_paused:
                     now = perf_counter() - start_perf
                     remain = target - now
+                    
                     if remain <= 0:
                         break
                     if remain > 0.02:
@@ -776,6 +780,16 @@ class AutoPlayer:
             except Exception:
                 pass
 
+            # 预处理：同键延长音并集 + tap（release->press, gap 可为 0ms）
+            try:
+                events = self._apply_union_and_tap(events)
+            except Exception:
+                pass
+            # 最终排序（确保同刻先 off 再 on）
+            try:
+                events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+            except Exception:
+                pass
             return events
         except Exception as e:
             # 兜底：解析过程中出现异常
@@ -791,6 +805,112 @@ class AutoPlayer:
             return get_default_mapping()
         except Exception:
             return {}
+
+    def _apply_union_and_tap(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """对同一 key 的按键区间做并集合并，并在每个子音起点插入 tap（release→press）。
+        - tap_gap_ms: 0 代表零间隔（同刻 off→on，依赖排序保证顺序）。
+        - retrigger_min_gap_ms: 限制最小重触发间隔，避免极限抖动。
+        - 仅当 allow_retrigger=True 时插入 tap。
+        传入/返回: 事件列表，元素包含 'start_time','type' in ('note_on','note_off'),'key'。
+        """
+        if not events:
+            return events
+        allow_rt = bool(self.options.get('allow_retrigger', True))
+        tap_gap_ms = float(self.options.get('tap_gap_ms', 0))
+        retrig_gap_ms = float(self.options.get('retrigger_min_gap_ms', 40))
+        eps_ms = float(self.options.get('epsilon_ms', 6))
+        tap_gap = max(0.0, tap_gap_ms) / 1000.0
+        retrig_gap = max(0.0, retrig_gap_ms) / 1000.0
+        eps = max(0.0, eps_ms) / 1000.0
+
+        # 1) 先按 key 重建原始区间 [on, off]
+        # 确保按时间和类型顺序
+        try:
+            evs = sorted(events, key=lambda x: (float(x.get('start_time', 0.0)), 0 if x.get('type') == 'note_off' else 1))
+        except Exception:
+            evs = list(events)
+
+        per_key_intervals: Dict[str, List[Tuple[float, float]]] = {}
+        stacks: Dict[str, List[float]] = {}
+        for ev in evs:
+            k = ev.get('key')
+            if not k:
+                continue
+            t = float(ev.get('start_time', 0.0))
+            typ = ev.get('type')
+            if typ == 'note_on':
+                stacks.setdefault(k, []).append(t)
+            elif typ == 'note_off':
+                st_list = stacks.get(k, [])
+                if st_list:
+                    st = st_list.pop(0)
+                    if t < st:
+                        t = st
+                    per_key_intervals.setdefault(k, []).append((st, t))
+
+        # 2) 对每个 key 的区间做并集
+        def merge_union(intervals: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+            if not intervals:
+                return []
+            arr = sorted([(min(a, b), max(a, b)) for a, b in intervals], key=lambda x: x[0])
+            merged: List[Tuple[float, float]] = []
+            cs, ce = arr[0]
+            for s, e in arr[1:]:
+                if s <= ce + eps:
+                    ce = max(ce, e)
+                else:
+                    merged.append((cs, ce))
+                    cs, ce = s, e
+            merged.append((cs, ce))
+            return merged
+
+        per_key_union: Dict[str, List[Tuple[float, float]]] = {k: merge_union(iv) for k, iv in per_key_intervals.items()}
+
+        # 3) 生成“并集段”的主 on/off 事件
+        out: List[Dict[str, Any]] = []
+        for k, unions in per_key_union.items():
+            for s, e in unions:
+                out.append({'start_time': s, 'type': 'note_on', 'key': k, 'velocity': 64})
+                out.append({'start_time': e, 'type': 'note_off', 'key': k, 'velocity': 0})
+
+        # 4) 段内插入 tap：对每个原始区间的起点，若不等于并集段起点，则插入 off→on
+        if allow_rt:
+            for k, intervals in per_key_intervals.items():
+                unions = per_key_union.get(k, [])
+                if not unions:
+                    continue
+                # 为快速判断“是否等于段起点”，做列表
+                union_starts = [s for s, _ in unions]
+                union_ends = [e for _, e in unions]
+                last_tap_time = -1e9
+                for st, en in sorted(intervals, key=lambda x: x[0]):
+                    # 找到 st 所在并集段（st ∈ [us, ue]）
+                    seg_idx = -1
+                    for i, (us, ue) in enumerate(unions):
+                        if st >= us - eps and st <= ue + eps:
+                            seg_idx = i
+                            break
+                    if seg_idx < 0:
+                        continue
+                    us, ue = unions[seg_idx]
+                    # 若与段起点“相等”，不需要 tap（主 on 已存在）
+                    if any(abs(st - us0) <= eps for us0 in union_starts):
+                        continue
+                    # 最小重触发间隔
+                    if (st - last_tap_time) < retrig_gap:
+                        continue
+                    # 若 tap_on 超过段末，跳过（避免制造孤立按下）
+                    tap_on_time = st + tap_gap
+                    if tap_on_time > ue - 1e-6:
+                        continue
+                    # 插入即时 tap：off at st, on at st+gap（gap=0 时同刻，通过排序保证 off→on）
+                    out.append({'start_time': st, 'type': 'note_off', 'key': k, 'velocity': 0})
+                    out.append({'start_time': tap_on_time, 'type': 'note_on', 'key': k, 'velocity': 64})
+                    last_tap_time = st
+
+        # 对于原本不包含在 per_key_intervals 的“非按键类事件”，保持（本模块中均是按键事件，可忽略）
+        # 最终返回组合后的事件
+        return out if out else events
     
     def _generate_chord_accompaniment(self, events: List[Dict[str, Any]], key_mapping: Dict[str, str], strategy_name: Optional[str]) -> List[Dict[str, Any]]:
         """根据已映射旋律事件，调用新版 ChordEngine 生成与主音节奏对齐的和弦伴奏。"""
