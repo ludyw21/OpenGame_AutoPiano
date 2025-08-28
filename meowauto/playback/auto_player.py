@@ -486,51 +486,72 @@ class AutoPlayer:
             for track_num, track in enumerate(midi.tracks):
                 track_time = 0
                 for msg in track:
+                    # 先累加本条消息的 delta ticks，得到该消息的绝对 tick 位置
+                    # 注意：mido 中 msg.time 为“自上条消息后的增量tick”。
+                    track_time += msg.time
                     all_messages.append({
                         'msg': msg,
                         'track_time': track_time,
                         'track_num': track_num
                     })
-                    track_time += msg.time
             
             # 按时间排序所有消息
             all_messages.sort(key=lambda x: x['track_time'])
 
-            # 构建全局 tempo 变化表 (tick -> tempo)
+            # 时间基判断：PPQ(>0) vs SMPTE(<0)
+            is_smpte = bool(ticks_per_beat < 0)
+
+            # 构建时间换算：
+            # - PPQ: 使用 tempo 分段积分
+            # - SMPTE: 忽略 tempo，以 fps * ticks_per_frame 常量计算 seconds_per_tick
             tempo_changes: List[Dict[str, Any]] = []
-            # 保证从 tick 0 开始有一个 tempo
-            tempo_changes.append({'tick': 0, 'tempo': default_tempo, 'acc_seconds': 0.0})
-            last_tempo = default_tempo
-            for mi in all_messages:
-                msg = mi['msg']
-                if msg.type == 'set_tempo':
-                    t = mi['track_time']
-                    # 仅当与上一次不同才记录，避免重复
-                    if not tempo_changes or t != tempo_changes[-1]['tick'] or msg.tempo != last_tempo:
-                        tempo_changes.append({'tick': t, 'tempo': msg.tempo, 'acc_seconds': 0.0})
-                        last_tempo = msg.tempo
+            smpte_seconds_per_tick: float = 0.0
+            if not is_smpte:
+                # PPQ
+                tempo_changes.append({'tick': 0, 'tempo': default_tempo, 'acc_seconds': 0.0})
+                last_tempo = default_tempo
+                for mi in all_messages:
+                    msg = mi['msg']
+                    if msg.type == 'set_tempo':
+                        t = mi['track_time']
+                        if not tempo_changes or t != tempo_changes[-1]['tick'] or msg.tempo != last_tempo:
+                            tempo_changes.append({'tick': t, 'tempo': msg.tempo, 'acc_seconds': 0.0})
+                            last_tempo = msg.tempo
 
-            # 根据变化的 tick 计算每个变化点的累积秒数 acc_seconds
-            # acc_seconds 为到该变化点开始位置为止的累计秒数
-            for i in range(1, len(tempo_changes)):
-                prev = tempo_changes[i-1]
-                cur = tempo_changes[i]
-                delta_ticks = max(0, cur['tick'] - prev['tick'])
-                seconds_per_tick = (prev['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
-                cur['acc_seconds'] = prev['acc_seconds'] + delta_ticks * seconds_per_tick
+                for i in range(1, len(tempo_changes)):
+                    prev = tempo_changes[i-1]
+                    cur = tempo_changes[i]
+                    delta_ticks = max(0, cur['tick'] - prev['tick'])
+                    seconds_per_tick = (prev['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
+                    cur['acc_seconds'] = prev['acc_seconds'] + delta_ticks * seconds_per_tick
 
-            def tick_to_seconds(tick_pos: int) -> float:
-                """将绝对 tick 位置转换为秒，按 tempo 分段积分"""
-                # 找到最后一个变化点，其 tick <= tick_pos
-                idx = 0
-                for i in range(len(tempo_changes)):
-                    if tempo_changes[i]['tick'] <= tick_pos:
-                        idx = i
-                    else:
-                        break
-                base = tempo_changes[idx]
-                seconds_per_tick = (base['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
-                return base['acc_seconds'] + (tick_pos - base['tick']) * seconds_per_tick
+                def tick_to_seconds(tick_pos: int) -> float:
+                    # 找到最后一个变化点，其 tick <= tick_pos
+                    idx = 0
+                    for i in range(len(tempo_changes)):
+                        if tempo_changes[i]['tick'] <= tick_pos:
+                            idx = i
+                        else:
+                            break
+                    base = tempo_changes[idx]
+                    seconds_per_tick = (base['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
+                    return base['acc_seconds'] + (tick_pos - base['tick']) * seconds_per_tick
+            else:
+                # SMPTE: ticks_per_beat 为有符号16位，
+                # 高字节（负数）为帧率：-24/-25/-29/-30（-29 表示 29.97fps），低字节为每帧的 ticks 数
+                div = int(ticks_per_beat)
+                # 转成 16 位并取高/低字节
+                hi = (div >> 8) & 0xFF
+                lo = div & 0xFF
+                # hi 是补码，转换为有符号 8 位
+                if hi >= 128:
+                    hi -= 256
+                fps = abs(hi) if hi != 0 else 30  # 兜底 30fps
+                ticks_per_frame = lo if lo > 0 else 80  # 兜底
+                smpte_seconds_per_tick = 1.0 / (float(fps) * float(ticks_per_frame))
+
+                def tick_to_seconds(tick_pos: int) -> float:
+                    return float(tick_pos) * smpte_seconds_per_tick
             
             # 处理所有消息
             global_time = 0
@@ -667,7 +688,93 @@ class AutoPlayer:
             except Exception:
                 events.sort(key=lambda x: x['start_time'])
             if self.debug and events:
-                self.logger.log(f"[DEBUG] 解析后事件数: {len(events)}，示例: {events[:5]}", "DEBUG")
+                try:
+                    tempos = []
+                    if not is_smpte:
+                        try:
+                            tempos = [tc.get('tempo') for tc in tempo_changes]  # type: ignore
+                        except Exception:
+                            tempos = []
+                    first_ev = events[0]
+                    last_ev = events[-1]
+                    span = max(0.0, float(last_ev.get('start_time', 0.0)) - float(first_ev.get('start_time', 0.0)))
+                    self.logger.log(
+                        f"[DEBUG] ticks_per_beat={ticks_per_beat}, timebase={'SMPTE' if is_smpte else 'PPQ'}, tempo_changes={0 if is_smpte else len(tempo_changes)}, tempos(sample)={tempos[:4] if tempos else '[]'}, smpte_spt={smpte_seconds_per_tick if is_smpte else 'n/a'}",
+                        "DEBUG",
+                    )
+                    self.logger.log(
+                        f"[DEBUG] 事件总数={len(events)}, 首个时间={first_ev.get('start_time', 0.0):.6f}s, 末个时间={last_ev.get('start_time', 0.0):.6f}s, 跨度={span:.6f}s",
+                        "DEBUG",
+                    )
+                    self.logger.log(f"[DEBUG] 事件示例: {events[:5]}", "DEBUG")
+                except Exception:
+                    pass
+
+            # 自校准：若与 mido 计算的总时长相差过大，则按比例缩放到一致
+            try:
+                if events:
+                    # 使用事件中最大时间作为跨度，更稳健
+                    try:
+                        my_total = max(float(ev.get('start_time', 0.0)) for ev in events)
+                    except Exception:
+                        my_total = float(events[-1].get('start_time', 0.0))
+                    mf_len = 0.0
+                    try:
+                        mf = mido.MidiFile(midi_file)
+                        mf_len = float(getattr(mf, 'length', 0.0) or 0.0)
+                    except Exception:
+                        mf_len = 0.0
+                    # 若 mido.length 不可用，退化为用 tempo_changes/PPQ 或 SMPTE 常量积分求长度
+                    if mf_len <= 0.0:
+                        try:
+                            if not is_smpte:
+                                # PPQ：用 tempo_changes 积分到最大 tick
+                                max_tick = 0
+                                try:
+                                    # all_messages 已排序
+                                    max_tick = max(int(mi['track_time']) for mi in all_messages) if all_messages else 0
+                                except Exception:
+                                    max_tick = 0
+                                if tempo_changes:
+                                    acc = 0.0
+                                    for i in range(1, len(tempo_changes)):
+                                        prev = tempo_changes[i-1]
+                                        cur = tempo_changes[i]
+                                        dt = max(0, int(cur['tick']) - int(prev['tick']))
+                                        spt = (prev['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
+                                        acc += dt * spt
+                                    if tempo_changes:
+                                        last = tempo_changes[-1]
+                                        tail = max(0, max_tick - int(last['tick']))
+                                        spt = (last['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
+                                        acc += tail * spt
+                                    mf_len = acc
+                            else:
+                                # SMPTE：常量秒/每tick 乘以最大 tick
+                                max_tick = 0
+                                try:
+                                    max_tick = max(int(mi['track_time']) for mi in all_messages) if all_messages else 0
+                                except Exception:
+                                    max_tick = 0
+                                mf_len = float(max_tick) * float(smpte_seconds_per_tick)
+                        except Exception:
+                            pass
+                    if my_total > 0.0 and mf_len > 0.0:
+                        ratio = mf_len / my_total if my_total > 1e-9 else 1.0
+                        # 偏差超过5%即缩放，尽量与 mido 时长对齐（覆盖个别曲目二倍速/半速）
+                        if abs(1.0 - ratio) >= 0.05:
+                            for ev in events:
+                                try:
+                                    ev['start_time'] = float(ev.get('start_time', 0.0)) * ratio
+                                except Exception:
+                                    pass
+                            if self.debug:
+                                try:
+                                    self.logger.log(f"[DEBUG] 时间轴校准: my_total={my_total:.6f}s -> {my_total*ratio:.6f}s, mido.length={mf_len:.6f}s, ratio={ratio:.6f}", "DEBUG")
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
 
             return events
         except Exception as e:
