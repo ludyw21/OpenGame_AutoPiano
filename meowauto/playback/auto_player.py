@@ -10,6 +10,7 @@ from meowauto.utils import midi_tools
 from meowauto.core import Event, KeySender, Logger
 from meowauto.playback.strategies import get_strategy
 from meowauto.playback.keymaps import get_default_mapping
+from meowauto.music.chord_engine import ChordEngine
 
 import os
 
@@ -29,7 +30,7 @@ class AutoPlayer:
             'allow_retrigger': True,           # 允许同一键在按下状态下进行重触发（快速抬起再按下）
             'retrigger_min_gap_ms': 40,        # 重触发的最小时间间隔
             'epsilon_ms': 6,                   # 批处理窗口大小（毫秒）
-            'send_ahead_ms': 2,                # 提前量（为抵消系统调度/输入延迟，负值表示延后）
+            'send_ahead_ms': 0,                # 提前量（0 = 不提前，严格与事件时间对齐）
             'spin_threshold_ms': 1,            # 忙等阈值（最后阶段改为忙等，保证更精准触发）
             'post_action_sleep_ms': 0,         # 每批动作后的微停，0 表示不强制微停
             # 可选：和弦伴奏（附加映射事件，不改原事件）
@@ -364,11 +365,11 @@ class AutoPlayer:
                 self._handle_error("没有可演奏的事件")
                 return
 
-            # 排序并计算总时长（同一时间戳，note_off 优先）
+            # 排序并计算总时长（同一时间戳优先释放再按下，避免抑制快速重按）
             try:
                 events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
             except Exception:
-                pass
+                events.sort(key=lambda x: x['start_time'])
             total_time = events[-1]['start_time'] if events else 0.0
 
             from time import perf_counter
@@ -685,139 +686,19 @@ class AutoPlayer:
             return {}
     
     def _generate_chord_accompaniment(self, events: List[Dict[str, Any]], key_mapping: Dict[str, str], strategy_name: Optional[str]) -> List[Dict[str, Any]]:
-        """根据已映射的旋律事件生成"后处理"和弦伴奏事件。
-        规则：
-        - 不修改/替换原旋律事件，只追加固定和弦键位(z,x,c,v,b,n,m)的按下/抬起事件。
-        - 和弦识别支持 triad7/triad/greedy 三种模式（来自 self.options['chord_accomp_mode']）。
-        - 使用贪心或完整匹配，按时间对音级集合进行段切分，并应用最小延音阈值。
-        """
+        """根据已映射旋律事件，调用新版 ChordEngine 生成与主音节奏对齐的和弦伴奏。"""
         try:
             if not events:
                 return []
-
-            # 固定和弦键映射与模式优先顺序
-            chord_key_map: Dict[str, str] = {
-                'C': 'z', 'Dm': 'x', 'Em': 'c', 'F': 'v', 'G': 'b', 'Am': 'n', 'G7': 'm'
-            }
-            chord_patterns: Dict[str, set] = {
-                'G7': {7, 11, 2, 5},
-                'C': {0, 4, 7},
-                'Dm': {2, 5, 9},
-                'Em': {4, 7, 11},
-                'F': {5, 9, 0},
-                'G': {7, 11, 2},
-                'Am': {9, 0, 4},
-            }
-            priority = ['G7', 'C', 'Dm', 'Em', 'F', 'G', 'Am']
-
-            mode = str(self.options.get('chord_accomp_mode', 'triad')).lower()
-            min_sustain = max(0.0, float(self.options.get('chord_accomp_min_sustain_ms', 120)) / 1000.0)
-
-            # 事件需按时间有序；同一时间戳 note_off 优先
-            try:
-                events_sorted = sorted(events, key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
-            except Exception:
-                events_sorted = list(events)
-
-            # 统计当前激活的音级计数
-            pc_counts: Dict[int, int] = {}
-
-            # 当前和弦段信息
-            current_name: Optional[str] = None
-            segment_start: Optional[float] = None
-
-            accomp: List[Dict[str, Any]] = []
-
-            def detect_from_pcs(pcs: set) -> Optional[str]:
-                if not pcs:
-                    return None
-                if mode == 'triad7':
-                    # 先七和弦，再三和弦（完整子集）
-                    for name in priority:
-                        patt = chord_patterns[name]
-                        if patt.issubset(pcs):
-                            return name
-                    return None
-                if mode == 'triad':
-                    for name in [n for n in priority if n != 'G7']:
-                        patt = chord_patterns[name]
-                        if patt.issubset(pcs):
-                            return name
-                    return None
-                # greedy：交集最多且>=2，平局按 priority
-                best_name = None
-                best_size = 0
-                for name in priority:
-                    patt = chord_patterns[name]
-                    inter = patt.intersection(pcs)
-                    sz = len(inter)
-                    if sz >= 2 and sz > best_size:
-                        best_size = sz
-                        best_name = name
-                return best_name
-
-            def close_segment(name: Optional[str], start_t: Optional[float], end_t: float):
-                if not name or start_t is None:
-                    return
-                key = chord_key_map.get(name)
-                if not key:
-                    return
-                on_t = start_t
-                off_t = max(end_t, start_t + min_sustain)
-                accomp.append({'start_time': on_t, 'type': 'note_on', 'key': key, 'velocity': 64, 'channel': 0, 'note': None})
-                accomp.append({'start_time': off_t, 'type': 'note_off', 'key': key, 'velocity': 0, 'channel': 0, 'note': None})
-
-            # 扫描时间线，遇到事件变更时更新 pcs -> 识别和弦 -> 段切换
-            last_time = None
-            for ev in events_sorted:
-                t = float(ev.get('start_time', 0.0))
-                typ = ev.get('type')
-                note = ev.get('note', None)
-
-                # 在时间推进到 t 前，基于当前 pcs 决定是否需要关闭段（若和弦名将变更）
-                # 实际上，先处理事件变更再判断更准确：先更新 pc_counts，再基于新状态检测
-
-                # 更新 pc_counts
-                if note is not None:
-                    pc = int(note) % 12
-                    if typ == 'note_on':
-                        pc_counts[pc] = pc_counts.get(pc, 0) + 1
-                    elif typ == 'note_off':
-                        if pc in pc_counts:
-                            pc_counts[pc] = max(0, pc_counts[pc] - 1)
-                            if pc_counts[pc] == 0:
-                                del pc_counts[pc]
-
-                # 仅在时间点变化后进行识别与段切换
-                if last_time is None or t != last_time:
-                    pcs = set(pc_counts.keys())
-                    detected = detect_from_pcs(pcs)
-                    if detected != current_name:
-                        # 关闭旧段
-                        if current_name is not None and segment_start is not None:
-                            close_segment(current_name, segment_start, last_time if last_time is not None else t)
-                        # 开启新段
-                        current_name = detected
-                        segment_start = t if detected is not None else None
-                    last_time = t
-
-            # 收尾：直到最后一个事件时间
-            final_time = events_sorted[-1]['start_time'] if events_sorted else 0.0
-            if current_name is not None and segment_start is not None:
-                close_segment(current_name, segment_start, float(final_time))
-
-            # 内部排序，note_off 优先
-            try:
-                accomp.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
-            except Exception:
-                accomp.sort(key=lambda x: x['start_time'])
-
+            # 惰性初始化引擎
+            if not hasattr(self, "_chord_engine") or self._chord_engine is None:
+                self._chord_engine = ChordEngine()
+            accomp = self._chord_engine.generate_accompaniment(events, self.options)
             if self.debug:
                 try:
-                    self.logger.log(f"[DEBUG] 和弦伴奏段数: {len(accomp)//2}, 追加事件: {len(accomp)}", "DEBUG")
+                    self.logger.log(f"[DEBUG] ChordEngine 追加事件: {len(accomp)}", "DEBUG")
                 except Exception:
                     pass
-
             return accomp
         except Exception:
             return []
