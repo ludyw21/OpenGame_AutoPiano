@@ -6,9 +6,13 @@
 from .auto_player import AutoPlayer
 from .midi_player import MidiPlayer
 from .playlist_manager import PlaylistManager
+from .keymaps_ext import DRUMS_KEYMAP, BASS_KEYMAP, GUITAR_KEYMAP
 
 __all__ = [
     'AutoPlayer',
     'MidiPlayer',
-    'PlaylistManager'
-] 
+    'PlaylistManager',
+    'DRUMS_KEYMAP',
+    'BASS_KEYMAP',
+    'GUITAR_KEYMAP',
+]

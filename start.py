@@ -13,7 +13,7 @@ from pathlib import Path
 
 def main():
     """主函数"""
-    print("🎹 MeowField AutoPiano v1.0.5 启动脚本")
+    print("🎹 MeowField AutoPiano v1.0.6 启动脚本")
     print("=" * 50)
     
     # 检查Python版本

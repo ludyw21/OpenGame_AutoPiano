@@ -5,12 +5,15 @@
 
 import time
 import threading
-from typing import List, Optional, Callable, Dict, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from meowauto.utils import midi_tools
 from meowauto.core import Event, KeySender, Logger
 from meowauto.playback.strategies import get_strategy
 from meowauto.playback.keymaps import get_default_mapping
+from meowauto.core.config import ConfigManager
 from meowauto.music.chord_engine import ChordEngine
+from meowauto.playback.keymaps_ext.drums import DRUMS_KEYMAP
+from meowauto.midi.drums_parser import DrumsMidiParser
 
 import os
 
@@ -36,6 +39,7 @@ class AutoPlayer:
             'enable_chord_accomp': True,       # 启用和弦伴奏
             'chord_accomp_mode': 'triad',
             'chord_accomp_min_sustain_ms': 120,
+            'chord_replace_melody': False,     # 用和弦键替代主音键（去根音）
             'enable_quantize': False,
             'quantize_grid_ms': 30,
             'enable_black_transpose': True,
@@ -139,6 +143,81 @@ class AutoPlayer:
         if self.debug:
             self.logger.log(f"[DEBUG] 文件: {midi_file}, 展开事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
         return True
+
+    def start_auto_play_midi_drums(self, midi_file: str, tempo: float = 1.0,
+                                   key_mapping: Optional[Dict[str, str]] = None) -> bool:
+        """开始自动演奏（鼓专用MIDI）
+        - 使用 DrumsMidiParser 读取 tempo map，输出鼓位事件
+        - 直接按鼓键位映射（不走21键策略），忽略力度
+        - 仅生成 note_on/note_off 键盘事件并进入 _auto_play_mapped_events_thread
+        """
+        if self.is_playing:
+            self.logger.log("自动演奏已在进行中", "WARNING")
+            return False
+        if not midi_file:
+            self.logger.log("MIDI文件路径为空", "ERROR")
+            return False
+
+        # 键位映射：允许外部覆盖，默认使用 DRUMS_KEYMAP
+        km = key_mapping or DRUMS_KEYMAP
+        parser = DrumsMidiParser()
+        notes = parser.parse(midi_file)
+        if not notes:
+            self.logger.log("鼓MIDI解析为空或失败", "ERROR")
+            return False
+
+        # 将鼓事件转换为按键事件
+        events: List[Dict[str, Any]] = []
+        for n in notes:
+            try:
+                st = float(n.get('start_time', 0.0))
+                et = float(n.get('end_time', st))
+                drum_id = str(n.get('drum_id', '')).upper()
+                key = km.get(drum_id)
+                if not key:
+                    # 容错：若 drum_id 未映射，尝试关键别名
+                    if drum_id.startswith('HIHAT'):
+                        key = km.get('HIHAT_CLOSE')
+                    elif 'TOM' in drum_id:
+                        key = km.get('TOM1') or km.get('TOM2')
+                    elif 'CRASH' in drum_id:
+                        key = km.get('CRASH_MID') or km.get('CRASH_HIGH')
+                    elif 'RIDE' in drum_id:
+                        key = km.get('RIDE')
+                    elif 'SNARE' in drum_id:
+                        key = km.get('SNARE')
+                    else:
+                        key = km.get('KICK')
+                if not key:
+                    continue
+                events.append({'start_time': st, 'type': 'note_on', 'key': key, 'velocity': 0, 'channel': int(n.get('channel', 9)), 'note': int(n.get('note', 36))})
+                events.append({'start_time': max(et, st), 'type': 'note_off', 'key': key, 'velocity': 0, 'channel': int(n.get('channel', 9)), 'note': int(n.get('note', 36))})
+            except Exception:
+                continue
+
+        if not events:
+            self.logger.log("鼓MIDI映射为空", "ERROR")
+            return False
+
+        # 排序，同时间戳先off后on
+        try:
+            events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+        except Exception:
+            pass
+
+        self.current_tempo = tempo
+        self.is_playing = True
+        self.is_paused = False
+        self.play_thread = threading.Thread(target=self._auto_play_mapped_events_thread, args=(events,))
+        self.play_thread.daemon = True
+        self.play_thread.start()
+
+        if self.playback_callbacks['on_start']:
+            self.playback_callbacks['on_start']()
+        self.logger.log("开始自动演奏（鼓MIDI专用）", "INFO")
+        if self.debug:
+            self.logger.log(f"[DEBUG] 文件: {midi_file}, 鼓事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
+        return True
     
     def start_auto_play_midi_events(self, notes: List[Dict[str, Any]], tempo: float = 1.0,
                                     key_mapping: Dict[str, str] = None,
@@ -176,7 +255,15 @@ class AutoPlayer:
                 continue
 
         # 可选：和弦伴奏（不更改原事件，仅附加映射后的伴奏键位事件）
-        if events and bool(self.options.get('enable_chord_accomp', False)):
+        # 当启用“用和弦键替代主音键”时，不再追加伴奏事件，而是对主音事件进行替换
+        if events and bool(self.options.get('chord_replace_melody', False)):
+            try:
+                events = self._apply_chord_key_replacement(events, key_mapping or self._get_default_key_mapping(), strategy_name)
+                if self.debug:
+                    self.logger.log(f"[DEBUG] 已替换为和弦键事件（数量 {len(events)}）", "DEBUG")
+            except Exception:
+                pass
+        elif events and bool(self.options.get('enable_chord_accomp', False)):
             try:
                 acc = self._generate_chord_accompaniment(events, key_mapping or self._get_default_key_mapping(), strategy_name)
                 if acc:
@@ -212,6 +299,98 @@ class AutoPlayer:
         if self.playback_callbacks['on_start']:
             self.playback_callbacks['on_start']()
         self.logger.log("开始自动演奏（外部MIDI事件）", "INFO")
+        if self.debug:
+            self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
+        return True
+
+    def start_auto_play_midi_events_mixed(self, notes: List[Dict[str, Any]], tempo: float = 1.0,
+                                          role_keymaps: Dict[str, Dict[str, str]] | None = None,
+                                          strategy_name: Optional[str] = None) -> bool:
+        """开始自动演奏（按事件角色选择不同键位映射）。
+        期望 notes: 包含 start_time/end_time/note/channel，可选字段 role（如 drums/bass/melody），也可已有 instrument_name/program 等。
+        role_keymaps: 形如 { 'drums': DRUMS_KEYMAP, 'bass': BASS_KEYMAP, 'melody': DEFAULT }。
+        若某事件缺少 role，则使用 'melody' 的映射，若仍缺失则使用默认映射。
+        """
+        if self.is_playing:
+            self.logger.log("自动演奏已在进行中", "WARNING")
+            return False
+        if not notes:
+            self.logger.log("外部解析的MIDI事件为空", "ERROR")
+            return False
+
+        # 默认映射兜底
+        default_map = None
+        try:
+            default_map = self._get_default_key_mapping()
+        except Exception:
+            default_map = None
+        role_keymaps = role_keymaps or {}
+
+        # 展开为按键事件
+        events: List[Dict[str, Any]] = []
+        strategy = get_strategy(strategy_name or "strategy_21key")
+        for n in notes:
+            try:
+                st = float(n.get('start_time', 0.0))
+                et = float(n.get('end_time', st))
+                note = int(n.get('note', 0))
+                ch = int(n.get('channel', 0))
+                role = str(n.get('role', 'melody') or 'melody')
+                km = role_keymaps.get(role) or role_keymaps.get('melody') or default_map
+                if not km:
+                    km = self._get_default_key_mapping()
+                key = strategy.map_note(note, km, self.options)
+                if not key:
+                    continue
+                events.append({'start_time': st, 'type': 'note_on', 'key': key, 'velocity': int(n.get('velocity', 64)), 'channel': ch, 'note': note})
+                events.append({'start_time': max(et, st), 'type': 'note_off', 'key': key, 'velocity': 0, 'channel': ch, 'note': note})
+            except Exception:
+                continue
+
+        # 可选：和弦伴奏（对合并后的事件）
+        if events and bool(self.options.get('chord_replace_melody', False)):
+            try:
+                km = role_keymaps.get('melody') or default_map or self._get_default_key_mapping()
+                events = self._apply_chord_key_replacement(events, km, strategy_name)
+                if self.debug:
+                    self.logger.log(f"[DEBUG] 已替换为和弦键事件（数量 {len(events)}）", "DEBUG")
+            except Exception:
+                pass
+        elif events and bool(self.options.get('enable_chord_accomp', False)):
+            try:
+                km = role_keymaps.get('melody') or default_map or self._get_default_key_mapping()
+                acc = self._generate_chord_accompaniment(events, km, strategy_name)
+                if acc:
+                    events.extend(acc)
+                    if self.debug:
+                        self.logger.log(f"[DEBUG] 伴奏追加事件: {len(acc)}", "DEBUG")
+            except Exception:
+                pass
+
+        # 预处理：同键延长音并集 + tap
+        try:
+            events = self._apply_union_and_tap(events)
+        except Exception:
+            pass
+        try:
+            events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+        except Exception:
+            events.sort(key=lambda x: x['start_time'])
+
+        if not events:
+            self.logger.log("展开后的回放事件为空", "ERROR")
+            return False
+
+        self.current_tempo = tempo
+        self.is_playing = True
+        self.is_paused = False
+        self.play_thread = threading.Thread(target=self._auto_play_mapped_events_thread, args=(events,))
+        self.play_thread.daemon = True
+        self.play_thread.start()
+
+        if self.playback_callbacks['on_start']:
+            self.playback_callbacks['on_start']()
+        self.logger.log("开始自动演奏（外部MIDI事件-按角色混合映射）", "INFO")
         if self.debug:
             self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
         return True
@@ -671,8 +850,15 @@ class AutoPlayer:
                             except Exception:
                                 pass
             
-            # 可选：和弦伴奏（对原始事件集生成伴奏，再一起移调与排序）
-            if events and bool(self.options.get('enable_chord_accomp', False)):
+            # 可选：和弦伴奏或替代
+            if events and bool(self.options.get('chord_replace_melody', False)):
+                try:
+                    events = self._apply_chord_key_replacement(events, key_mapping, strategy_name)
+                    if self.debug:
+                        self.logger.log(f"[DEBUG] 已替换为和弦键事件（数量 {len(events)}）", "DEBUG")
+                except Exception:
+                    pass
+            elif events and bool(self.options.get('enable_chord_accomp', False)):
                 try:
                     acc = self._generate_chord_accompaniment(events, key_mapping, strategy_name)
                     if acc:
@@ -800,12 +986,31 @@ class AutoPlayer:
             return []
     
     def _get_default_key_mapping(self) -> Dict[str, str]:
-        """获取默认21键位映射（委托到 keymaps.get_default_mapping）。"""
+        """获取默认键位映射。
+
+        优先读取配置项 `playback.keymap_profile`：
+        - drums -> DRUMS_KEYMAP
+        - bass  -> BASS_KEYMAP
+        - guitar-> GUITAR_KEYMAP
+        - 其它/缺省 -> 21 键钢琴映射
+        """
         try:
+            profile = "piano"
+            try:
+                cfg = ConfigManager()
+                profile = str(cfg.get('playback.keymap_profile', 'piano')).lower()
+            except Exception:
+                profile = "piano"
+            if profile == 'drums':
+                return DRUMS_KEYMAP
+            if profile == 'bass':
+                return BASS_KEYMAP
+            if profile == 'guitar':
+                return GUITAR_KEYMAP
             return get_default_mapping()
         except Exception:
-            return {}
-
+            return get_default_mapping()
+    
     def _apply_union_and_tap(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """对同一 key 的按键区间做并集合并，并在每个子音起点插入 tap（release→press）。
         - tap_gap_ms: 0 代表零间隔（同刻 off→on，依赖排序保证顺序）。
@@ -841,7 +1046,7 @@ class AutoPlayer:
             if typ == 'note_on':
                 stacks.setdefault(k, []).append(t)
             elif typ == 'note_off':
-                st_list = stacks.get(k, [])
+                st_list = stacks.get(k)
                 if st_list:
                     st = st_list.pop(0)
                     if t < st:
@@ -929,6 +1134,115 @@ class AutoPlayer:
             return accomp
         except Exception:
             return []
+
+    def _apply_chord_key_replacement(self, events: List[Dict[str, Any]], key_mapping: Dict[str, str], strategy_name: Optional[str]) -> List[Dict[str, Any]]:
+        """仅对“触发和弦组合”的主音执行替代：
+        - 条件：事件发生时刻 t 存在和弦组合（>=2 个和弦键处于按下区间）。
+        - 动作：将该主音的按下/抬起对，替换为多个和弦键的按下/抬起（1->N）。
+        - 其余主音事件保持不变；不追加伴奏事件。
+        """
+        try:
+            if not events:
+                return []
+            # 构建和弦键时间线
+            accomp = self._generate_chord_accompaniment(events, key_mapping, strategy_name)
+            if not accomp:
+                return events
+            # parse accompaniment into intervals per chord key
+            stacks: Dict[str, List[float]] = {}
+            intervals: List[Tuple[float, float, str]] = []
+            for ev in accomp or []:
+                if ev.get('type') == 'note_on':
+                    k = ev.get('key')
+                    if k is None:
+                        continue
+                    stacks.setdefault(k, []).append(float(ev.get('start_time', 0.0)))
+                elif ev.get('type') == 'note_off':
+                    k = ev.get('key')
+                    if k is None:
+                        continue
+                    st_list = stacks.get(k)
+                    if st_list:
+                        st = st_list.pop(0)
+                        et = float(ev.get('start_time', st))
+                        if et > st:
+                            intervals.append((st, et, k))
+            # 合并并排序区间（可选）
+            intervals.sort(key=lambda x: (x[0], x[1]))
+
+            # 快速查找：按时间定位覆盖 t 的所有区间（和弦）
+            starts = [iv[0] for iv in intervals]
+
+            def find_keys_at(t: float) -> List[str]:
+                import bisect
+                i = bisect.bisect_right(starts, t) - 1
+                if i < 0:
+                    return []
+                keys: List[str] = []
+                # 从 i 向后回溯，收集覆盖 t 的区间
+                for j in range(i, -1, -1):
+                    st, et, k = intervals[j]
+                    if t >= st and t <= et:
+                        keys.append(k)
+                    if t > et:
+                        break
+                return keys
+
+            # 遍历事件，按“音对”替代：仅当 t 处存在 >=2 个和弦键
+            out: List[Dict[str, Any]] = []
+            # 记录每个 (note, channel) 的起始时间及是否替代与和弦键列表
+            note_on_stack: Dict[Tuple[int, int], List[float]] = {}
+            replaced_meta: Dict[Tuple[int, int, float], List[str]] = {}
+
+            # 第一遍：标记哪些 note_on 需要替代，并记录 chord_keys
+            for ev in events:
+                if ev.get('type') == 'note_on':
+                    ch = int(ev.get('channel', 0))
+                    note = int(ev.get('note', -1))
+                    st = float(ev.get('start_time', 0.0))
+                    note_on_stack.setdefault((note, ch), []).append(st)
+                    chord_keys = find_keys_at(st)
+                    if len(chord_keys) >= 2:
+                        # 只替代“触发和弦组合”的音
+                        replaced_meta[(note, ch, st)] = chord_keys
+            # 清空临时栈，用于第二遍成对处理
+            note_on_stack.clear()
+
+            # 第二遍：构造输出事件
+            for ev in events:
+                etype = ev.get('type')
+                ch = int(ev.get('channel', 0))
+                note = int(ev.get('note', -1))
+                t = float(ev.get('start_time', 0.0))
+                if etype == 'note_on':
+                    note_on_stack.setdefault((note, ch), []).append(t)
+                    if (note, ch, t) in replaced_meta:
+                        # 跳过原始 note_on（将由成对的 note_off 一起生成替代事件）
+                        continue
+                    else:
+                        out.append(ev)
+                elif etype == 'note_off':
+                    st_list = note_on_stack.get((note, ch))
+                    if st_list:
+                        st = st_list.pop()
+                    else:
+                        st = t  # 容错
+                    if (note, ch, st) in replaced_meta:
+                        chord_keys = replaced_meta[(note, ch, st)]
+                        # 将该音替换为多个和弦键的 on/off 对，保持相同时长
+                        for k in chord_keys:
+                            out.append({'start_time': st, 'type': 'note_on', 'key': k, 'velocity': int(ev.get('velocity', 64)), 'channel': ch, 'note': note})
+                        for k in chord_keys:
+                            out.append({'start_time': t, 'type': 'note_off', 'key': k, 'velocity': 0, 'channel': ch, 'note': note})
+                    else:
+                        out.append(ev)
+                else:
+                    out.append(ev)
+            # 输出仍按时间排序
+            out.sort(key=lambda x: (float(x.get('start_time', 0.0)), 0 if x.get('type')=='note_on' else 1))
+            return out
+        except Exception:
+            return events
     
     def _map_midi_note_to_key(self, midi_note: int, key_mapping: Dict[str, str]) -> Optional[str]:
         """将MIDI音符映射到固定21键(L/M/H x 1..7)，半音采用就近度数映射。

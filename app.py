@@ -7,8 +7,16 @@ MeowField AutoPiano 主应用程序类
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+# 现代化主题：优先使用 ttkbootstrap
+try:
+    import ttkbootstrap as ttkb  # type: ignore
+except Exception:
+    ttkb = None
 import os
+import time
 import sys
+import tempfile
+import uuid
 from typing import Dict, Any, Optional
 
 # 导入自定义模块
@@ -17,9 +25,32 @@ from module_manager import ModuleManager
 from ui_manager import UIManager
 from meowauto.midi import analyzer, groups
 from meowauto.ui.sidebar import Sidebar
-from meowauto.ui.yuanshen import YuanShenPage
-from meowauto.ui.sky import SkyPage
-from meowauto.core.playlist_manager import PlaylistManager
+from router import Router
+from pages.solo import SoloPage
+from pages.ensemble import EnsemblePage
+# 瘦身：组件化UI构建
+from pages.components import file_select as comp_file_select
+from pages.components import playback_controls as comp_playback
+from pages.components import right_pane as comp_right
+from pages.components import bottom_progress as comp_bottom
+# 新增：乐器板块页面
+try:
+    from pages.instruments.epiano import EPianoPage  # type: ignore
+    from pages.instruments.guitar import GuitarPage  # type: ignore
+    from pages.instruments.bass import BassPage  # type: ignore
+    from pages.instruments.drums import DrumsPage  # type: ignore
+except Exception:
+    EPianoPage = GuitarPage = BassPage = DrumsPage = None  # type: ignore
+from meowauto.playback.playlist_manager import PlaylistManager
+from meowauto.core import Logger
+from meowauto.utils.exporters.key_notation import build_key_notation
+from meowauto.utils.exporters.event_csv import export_event_csv
+from meowauto.app.services.playback_service import PlaybackService
+from meowauto.app.controllers.playback_controller import PlaybackController
+try:
+    from meowauto.app.controllers.drums_controller import DrumsController  # type: ignore
+except Exception:
+    DrumsController = None  # type: ignore
 
 
 class MeowFieldAutoPiano:
@@ -27,10 +58,19 @@ class MeowFieldAutoPiano:
     
     def __init__(self):
         """初始化应用程序"""
-        # 创建主窗口
-        self.root = tk.Tk()
-        # 主窗口标题仅显示当前游戏名（初始为“开放空间”）
-        self.root.title("开放空间")
+        # 创建主窗口（ttkbootstrap 优先）
+        if 'ttkb' in globals() and ttkb is not None:
+            try:
+                self.root = ttkb.Window(themename="flatly")  # 现代扁平主题
+                self._using_ttkbootstrap = True
+            except Exception:
+                self.root = tk.Tk()
+                self._using_ttkbootstrap = False
+        else:
+            self.root = tk.Tk()
+            self._using_ttkbootstrap = False
+        # 主窗口标题（固定为中文）
+        self.root.title("MeowField自动演奏程序")
         self.root.geometry("1600x980")
         self.root.resizable(True, True)
         
@@ -46,9 +86,64 @@ class MeowFieldAutoPiano:
         # 初始化UI管理器
         self.ui_manager = UIManager(self.root, self.event_bus)
         self.current_game = "开放空间"
-        self.yuanshen_page = None
+        self.current_mode = "solo"  # 保留：兼容旧逻辑的全局模式（默认独奏）
+        # 新增：按乐器独立模式（后续若提供合奏，仅修改对应乐器项）
+        self.instrument_mode = {
+            '电子琴': 'solo',
+            '吉他': 'solo',
+            '贝斯': 'solo',
+            '架子鼓': 'solo',
+        }
+        # 新增：当前乐器板块，默认电子琴
+        self.current_instrument = "电子琴"
+        # 移除游戏页面：不再区分游戏
+        self.yuanshen_page = None  # 保留字段以避免外部引用报错
         self.sky_page = None
         self.sidebar_win = None
+        # 播放服务（提前初始化，以便页面注册时可用）
+        try:
+            self.playback_service = PlaybackService()
+        except Exception:
+            self.playback_service = None
+
+        # 初始化 Router（暂不切换到新页面，后续逐步迁移）
+        try:
+            self.router = Router(
+                getattr(self.ui_manager, 'left_content_frame', self.ui_manager.left_frame),
+                self.ui_manager.right_frame,
+                set_title=self.ui_manager.set_title_suffix,
+            )
+            # 可预注册页面（不立即显示）
+            try:
+                self.router.register('solo', SoloPage(controller=self))
+                self.router.register('ensemble', EnsemblePage(controller=self))
+                # 注册乐器板块页面（容错）
+                try:
+                    if EPianoPage:
+                        self.router.register('inst:epiano', EPianoPage(controller=self))
+                except Exception:
+                    pass
+                try:
+                    if GuitarPage:
+                        self.router.register('inst:guitar', GuitarPage(controller=self))
+                except Exception:
+                    pass
+                try:
+                    if BassPage:
+                        self.router.register('inst:bass', BassPage(controller=self))
+                except Exception:
+                    pass
+                try:
+                    if DrumsPage:
+                        # 传入真实的 DrumsController，并把 app 引用传给页面以复用文件选择/播放列表
+                        ctrl = DrumsController(self.playback_service) if DrumsController else self
+                        self.router.register('inst:drums', DrumsPage(controller=ctrl, app_ref=self))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        except Exception:
+            self.router = None
         
         # 注册事件监听器
         self._register_event_listeners()
@@ -56,31 +151,74 @@ class MeowFieldAutoPiano:
         # 加载模块
         self._load_modules()
         
-        # 创建UI组件
-        self._create_ui_components()
-        # 创建并对接侧边栏（默认展开，保持可见）
+        # 创建UI组件（迁移至页面内构建，不在此全局创建）
+        # self._create_ui_components()
+        # 创建并对接侧边栏（嵌入左侧容器，默认展开）
         self._create_sidebar_window()
         
         # 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        # 绑定销毁事件（调试 mainloop 退出问题）
+        try:
+            self.root.bind('<Destroy>', self._on_root_destroy, add="+")
+        except TypeError:
+            self.root.bind('<Destroy>', self._on_root_destroy)
         
         # 绑定热键
         self._bind_hotkeys()
         
-        # 默认切换到“开放空间”页面，确保主界面与设置保持
+        # 默认显示电子琴板块
         try:
-            self._switch_game('开放空间')
+            self.current_instrument = '电子琴'
+            if getattr(self, 'router', None):
+                self.router.show('inst:epiano', title=f"{self.current_instrument}")
         except Exception:
             pass
         # 发布系统就绪事件
-        self.event_bus.publish(Events.SYSTEM_READY, {'version': '1.0.5'}, 'App')
+        self.event_bus.publish(Events.SYSTEM_READY, {'version': '1.0.6'}, 'App')
         # 初始化标题后缀
-        self._update_titles_suffix(self.current_game)
+        try:
+            self._update_titles_suffix(self.current_instrument)
+        except Exception:
+            pass
+        # 启动期关闭保护：避免初始化阶段误触发关闭
+        self._startup_protect = True
+        # 仅调试期：默认不允许关闭，需显式授权（Ctrl+Q 或确认对话框）
+        self._allow_close = False
+        try:
+            self.root.after(1000, lambda: setattr(self, '_startup_protect', False))
+        except Exception:
+            self._startup_protect = False
+        # 绑定 Ctrl+Q 作为“明确退出”
+        try:
+            self.root.bind('<Control-q>', lambda e: self._request_close())
+        except Exception:
+            pass
         # 播放列表管理器
         try:
-            self.playlist = PlaylistManager()
+            self.logger = Logger()
+        except Exception:
+            self.logger = None  # 容错
+        try:
+            self.playlist = PlaylistManager(self.logger if self.logger else Logger())
         except Exception:
             self.playlist = None
+        # 播放服务（已在前文初始化；此处仅兜底）
+        try:
+            if not getattr(self, 'playback_service', None):
+                self.playback_service = PlaybackService()
+        except Exception:
+            if not getattr(self, 'playback_service', None):
+                self.playback_service = None
+        # 控制器占位：协调 UI 与播放服务
+        try:
+            self.playback_controller = PlaybackController(self, self.playback_service)
+        except Exception:
+            self.playback_controller = None
+        # 分部缓存：保存最近一次分离结果，供导出与预听使用
+        self._last_split_parts = {}
+        # 分部选择：记录用户在弹窗中勾选的分部名称集合
+        self._selected_part_names = set()
     
     def _set_window_icon(self):
         """设置窗口图标"""
@@ -124,15 +262,19 @@ class MeowFieldAutoPiano:
                 def _register_kb():
                     try:
                         keyboard.add_hotkey('ctrl+shift+c', _hotkey_stop, suppress=False)
+                        # 全局空格：暂停/恢复（不抑制系统事件）
+                        keyboard.add_hotkey('space', lambda: self.root.after(0, lambda: self._on_space_key(None)), suppress=False)
+                        # 全局 ESC：停止
+                        keyboard.add_hotkey('esc', lambda: self.root.after(0, lambda: self._on_escape_key(None)), suppress=False)
                     except Exception:
                         pass
                 t = threading.Thread(target=_register_kb, daemon=True)
                 t.start()
-                self._log_message("全局热键已注册: Ctrl+Shift+C (停止播放)")
+                self._log_message("全局热键已注册: 空格(暂停/恢复), ESC(停止), Ctrl+Shift+C(停止播放)")
             except Exception:
                 # 回退到窗口级绑定
                 self.root.bind('<Control-Shift-C>', lambda e: (self._stop_auto_play(), self._stop_playback()))
-                self._log_message("窗口热键已注册: Ctrl+Shift+C (停止播放)")
+                self._log_message("窗口热键已注册: 空格, ESC, Ctrl+S, Ctrl+Shift+C")
             
             self._log_message("热键绑定完成: 空格键(开始/暂停/恢复), ESC键(停止), Ctrl+S(停止自动演奏), Ctrl+Shift+C(停止播放)")
         except Exception as e:
@@ -227,261 +369,160 @@ class MeowFieldAutoPiano:
             self._log_message(error_msg, "ERROR")
     
     def _create_ui_components(self):
-        """创建UI组件"""
-        try:
-            # 直接创建功能组件，不依赖模块加载状态
-            self._create_file_selection_component()
-            self._create_playback_control_component()
-            self._create_right_pane()
-            self._create_bottom_progress()
-            
-        except Exception as e:
-            error_msg = f"创建UI组件失败: {e}"
-            self.event_bus.publish(Events.SYSTEM_ERROR, {'message': error_msg}, 'App')
+        """（已迁移）保留占位，避免外部调用报错"""
+        return
     
     def _create_sidebar_window(self):
-        """创建左侧可折叠的悬浮侧边栏窗口，并与主窗体联动"""
+        """在 UIManager.left_sidebar_holder 中创建嵌入式侧边栏。"""
         try:
-            self.sidebar_win = tk.Toplevel(self.root)
-            self.sidebar_win.overrideredirect(True)
-            self.sidebar_win.attributes('-topmost', True)
-            # 初始几何
             self.sidebar_width_expanded = 200
             self.sidebar_width_collapsed = 40
-            self.sidebar_current_width = self.sidebar_width_collapsed
-            # 内容
-            container = ttk.Frame(self.sidebar_win, padding=0)
-            container.pack(fill=tk.BOTH, expand=True)
-            self.sidebar = Sidebar(container, on_action=self._on_sidebar_action, width=self.sidebar_width_expanded)
-            self.sidebar.attach(row=0, column=0)
-            # 默认收起
+            self.sidebar_current_width = self.sidebar_width_expanded
+            # 启用外层壳层列宽动画，以获得平滑且现代的 UI 过渡
+            self.sidebar_shrink_holder = True
+            holder = getattr(self.ui_manager, 'left_sidebar_holder', None)
+            if holder is None:
+                # 兼容：若不存在 holder，则退回在 left_frame 左侧创建一个holder
+                self.ui_manager.left_frame.pack_forget()
+                shell = ttk.Frame(self.ui_manager.left_frame)
+                shell.pack(fill=tk.BOTH, expand=True)
+                holder = ttk.Frame(shell, width=self.sidebar_width_expanded)
+                holder.pack(side=tk.LEFT, fill=tk.Y)
+                self.ui_manager.left_content_frame = ttk.Frame(shell)
+                self.ui_manager.left_content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             try:
-                if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'toggle'):
-                    self.sidebar.toggle()
-                    self.sidebar_current_width = self.sidebar_width_collapsed
+                holder.pack_propagate(False)
             except Exception:
                 pass
-            # 跟随主窗体移动/缩放（不覆盖已有绑定）
+            # 初始化壳层列宽为展开宽度（通过 grid 列 minsize 控制）
             try:
-                self.root.bind('<Configure>', self._on_root_configure, add="+")
-            except TypeError:
-                # 兼容不支持 add 参数的实现，退而求其次：直接绑定
-                self.root.bind('<Configure>', self._on_root_configure)
-            # 主窗体最小化/恢复时联动隐藏/显示侧边栏
-            try:
-                self.root.bind('<Unmap>', self._on_root_unmap, add="+")
-                self.root.bind('<Map>', self._on_root_map, add="+")
-            except TypeError:
-                self.root.bind('<Unmap>', self._on_root_unmap)
-                self.root.bind('<Map>', self._on_root_map)
-            # 主窗体激活/失焦时联动隐藏/显示侧边栏（切换到其他应用时隐藏）
-            try:
-                self.root.bind('<FocusOut>', self._on_root_deactivate, add="+")
-                self.root.bind('<FocusIn>', self._on_root_activate, add="+")
-            except TypeError:
-                self.root.bind('<FocusOut>', self._on_root_deactivate)
-                self.root.bind('<FocusIn>', self._on_root_activate)
-            self.sidebar.frame.bind('<Configure>', self._on_sidebar_configure)
-            # 同步最小化/恢复状态
-            try:
-                self.root.bind('<Unmap>', self._on_root_unmap, add="+")
-                self.root.bind('<Map>', self._on_root_map, add="+")
-            except TypeError:
-                self.root.bind('<Unmap>', self._on_root_unmap)
-                self.root.bind('<Map>', self._on_root_map)
-            self._position_sidebar()
+                shell = getattr(self.ui_manager, 'left_shell', None)
+                if shell is not None:
+                    shell.grid_columnconfigure(0, minsize=self.sidebar_width_expanded)
+            except Exception:
+                pass
+            # 在 holder 内创建侧边栏
+            self.sidebar = Sidebar(
+                holder,
+                on_action=self._on_sidebar_action,
+                width=self.sidebar_width_expanded,
+                # 外层不缩放时，on_width 不触发外层宽度变化
+                on_width=(lambda w: self._update_sidebar_width(w)) if self.sidebar_shrink_holder else (lambda w: None)
+            )
+            self.sidebar.attach(use_pack=True)
+            # 设置初始宽度
+            if self.sidebar_shrink_holder:
+                self._update_sidebar_width(self.sidebar_width_expanded)
         except Exception as e:
             self._log_message(f"创建侧边栏失败: {e}", "ERROR")
 
     def _on_sidebar_configure(self, event=None):
-        """侧边栏内容尺寸变化时，同步窗口宽度"""
-        try:
-            # 依据内部frame宽度更新toplevel宽度
-            w = max(self.sidebar_width_collapsed, min(self.sidebar_width_expanded, event.width if event else self.sidebar.frame.winfo_width()))
-            self.sidebar_current_width = w
-            self._position_sidebar()
-        except Exception:
-            pass
+        """不再响应内部内容尺寸变化，避免反馈循环导致闪烁。"""
+        return
 
     def _on_root_configure(self, event=None):
-        """主窗体移动或尺寸变化时，重定位侧边栏"""
-        self._position_sidebar()
+        """主窗体变化时，这里无需处理悬浮几何。保留占位。"""
+        return
 
     def _on_root_unmap(self, event=None):
-        """主窗体最小化或隐藏时，隐藏侧边栏窗口"""
-        try:
-            if hasattr(self, 'root') and hasattr(self, 'sidebar_win') and self.sidebar_win:
-                # 仅当主窗体被最小化(iconic)时隐藏
-                state = None
-                try:
-                    state = self.root.state()
-                except Exception:
-                    state = None
-                if state == 'iconic' or state == 'withdrawn':
-                    self.sidebar_win.withdraw()
-        except Exception:
-            pass
+        return
 
     def _on_root_map(self, event=None):
-        """主窗体从最小化或隐藏状态恢复时，显示并重定位侧边栏窗口"""
-        try:
-            if hasattr(self, 'sidebar_win') and self.sidebar_win:
-                try:
-                    self.sidebar_win.deiconify()
-                except Exception:
-                    try:
-                        self.sidebar_win.state('normal')
-                    except Exception:
-                        pass
-                try:
-                    self.sidebar_win.lift()
-                except Exception:
-                    pass
-                self._position_sidebar()
-        except Exception:
-            pass
+        return
 
     def _on_root_deactivate(self, event=None):
-        """当主窗体失去焦点（切到其他应用）时，隐藏侧边栏以免遮挡顶层。"""
-        try:
-            # 仅对顶层(root本身)的失焦进行处理
-            if event is None or event.widget is self.root:
-                if hasattr(self, 'sidebar_win') and self.sidebar_win:
-                    self.sidebar_win.withdraw()
-        except Exception:
-            pass
+        return
 
     def _on_root_activate(self, event=None):
-        """当主窗体重新获得焦点时，恢复侧边栏显示并置顶。"""
-        try:
-            if event is None or event.widget is self.root:
-                if hasattr(self, 'sidebar_win') and self.sidebar_win:
-                    try:
-                        self.sidebar_win.deiconify()
-                    except Exception:
-                        try:
-                            self.sidebar_win.state('normal')
-                        except Exception:
-                            pass
-                    try:
-                        self.sidebar_win.lift()
-                    except Exception:
-                        pass
-                    self._position_sidebar()
-        except Exception:
-            pass
+        return
 
     def _position_sidebar(self):
-        try:
-            x = self.root.winfo_x() - self.sidebar_current_width
-            y = self.root.winfo_y()
-            h = self.root.winfo_height()
-            self.sidebar_win.geometry(f"{self.sidebar_current_width}x{h}+{x}+{y}")
-        except Exception:
-            pass
+        """嵌入式时不需要定位悬浮窗。"""
+        return
 
-    def _on_root_unmap(self, event=None):
-        """主窗体最小化/隐藏时，同步隐藏侧边栏"""
+    def _update_sidebar_width(self, w: int):
+        """侧边栏动画过程中实时回调，更新嵌入容器宽度。"""
         try:
-            if self.sidebar_win and self.sidebar_win.winfo_exists():
-                self.sidebar_win.withdraw()
-        except Exception:
-            pass
-
-    def _on_root_map(self, event=None):
-        """主窗体恢复显示时，同步显示侧边栏并重定位"""
-        try:
-            if self.sidebar_win and self.sidebar_win.winfo_exists():
-                self.sidebar_win.deiconify()
-                self._position_sidebar()
+            if not getattr(self, 'sidebar_shrink_holder', False):
+                return
+            shell = getattr(self.ui_manager, 'left_shell', None)
+            if shell is None:
+                return
+            w = int(w)
+            if hasattr(self, 'sidebar_width_collapsed') and hasattr(self, 'sidebar_width_expanded'):
+                w = max(self.sidebar_width_collapsed, min(self.sidebar_width_expanded, w))
+            # 去抖：无变化则不重绘
+            if getattr(self, '_sidebar_last_w', None) == w:
+                return
+            self._sidebar_last_w = w
+            self.sidebar_current_width = w
+            # 通过 grid 列的 minsize 实现侧边栏宽度动画
+            shell.grid_columnconfigure(0, minsize=w)
+            # 不强制 update，交由事件循环刷新
         except Exception:
             pass
 
     def _on_sidebar_action(self, key: str):
         """侧边栏按钮回调"""
         try:
-            if key == 'game-default':
-                self._switch_game('开放空间')
-            elif key == 'game-yuanshen':
-                self._switch_game('原神')
-            elif key == 'game-sky':
-                self._switch_game('光遇')
-            elif key == 'about':
-                self._show_about()
+            if key == 'mode-ensemble':
+                self.current_mode = 'ensemble'
+                try:
+                    if getattr(self, 'router', None):
+                        cur = self.router.current() if hasattr(self.router, 'current') else None
+                        if isinstance(cur, str) and cur.startswith('inst:'):
+                            title = f"{getattr(self, 'current_instrument', '电子琴')}"
+                            self.router.show(cur, title=title)
+                        else:
+                            self.router.show('ensemble', title="合奏")
+                    self.ui_manager.set_status('已切换为合奏页面')
+                except Exception:
+                    pass
+                return
+            if key == 'inst-epiano':
+                try:
+                    self.current_instrument = '电子琴'
+                    title = f"{self.current_instrument}"
+                    if getattr(self, 'router', None):
+                        self.router.show('inst:epiano', title=title)
+                    self.ui_manager.set_status('已切换至电子琴板块')
+                except Exception:
+                    pass
+                return
+            if key == 'inst-guitar':
+                try:
+                    self.current_instrument = '吉他'
+                    title = f"{self.current_instrument}"
+                    if getattr(self, 'router', None):
+                        self.router.show('inst:guitar', title=title)
+                    self.ui_manager.set_status('已切换至吉他板块（占位）')
+                except Exception:
+                    pass
+                return
+            if key == 'inst-bass':
+                try:
+                    self.current_instrument = '贝斯'
+                    title = f"{self.current_instrument}"
+                    if getattr(self, 'router', None):
+                        self.router.show('inst:bass', title=title)
+                    self.ui_manager.set_status('已切换至贝斯板块（占位）')
+                except Exception:
+                    pass
+                return
+            if key == 'inst-drums':
+                try:
+                    self.current_instrument = '架子鼓'
+                    title = f"{self.current_instrument}"
+                    if getattr(self, 'router', None):
+                        self.router.show('inst:drums', title=title)
+                    self.ui_manager.set_status('已切换至架子鼓板块')
+                except Exception:
+                    pass
+                return
         except Exception as e:
             self._log_message(f"侧边栏操作失败: {e}", "ERROR")
-    def _switch_game(self, game_name: str):
-        """切换游戏，占位页：原神/光遇；默认恢复主界面"""
-        self.current_game = game_name
-        is_default = (game_name in ('默认', '开放空间'))
-        try:
-            # 切换页面内容
-            if not is_default:
-                # 隐藏主分栏所在的容器（content_frame），避免空白占位
-                try:
-                    pw = getattr(self.ui_manager, 'paned_window', None)
-                    if pw is not None:
-                        content_parent_path = pw.winfo_parent()
-                        content_parent = pw.nametowidget(content_parent_path)
-                        content_parent.pack_forget()
-                except Exception:
-                    pass
-                # 显示对应占位页
-                if game_name == '原神':
-                    if self.yuanshen_page is None:
-                        self.yuanshen_page = YuanShenPage(self.ui_manager.page_container, controller=self)
-                    # 隐藏光遇页
-                    if self.sky_page is not None:
-                        try:
-                            self.sky_page.frame.pack_forget()
-                        except Exception:
-                            pass
-                    if not str(self.yuanshen_page.frame) in [str(c) for c in self.ui_manager.page_container.pack_slaves()]:
-                        self.yuanshen_page.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-                elif game_name == '光遇':
-                    if self.sky_page is None:
-                        self.sky_page = SkyPage(self.ui_manager.page_container, controller=self)
-                    # 隐藏原神页
-                    if self.yuanshen_page is not None:
-                        try:
-                            self.yuanshen_page.frame.pack_forget()
-                        except Exception:
-                            pass
-                    if not str(self.sky_page.frame) in [str(c) for c in self.ui_manager.page_container.pack_slaves()]:
-                        self.sky_page.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-            else:
-                # 恢复主分栏
-                try:
-                    pw = getattr(self.ui_manager, 'paned_window', None)
-                    if pw is not None:
-                        content_parent_path = pw.winfo_parent()
-                        content_parent = pw.nametowidget(content_parent_path)
-                        # 隐藏占位页
-                        if self.yuanshen_page is not None:
-                            try:
-                                self.yuanshen_page.frame.pack_forget()
-                            except Exception:
-                                pass
-                        if self.sky_page is not None:
-                            try:
-                                self.sky_page.frame.pack_forget()
-                            except Exception:
-                                pass
-                        # 重新显示主内容容器
-                        content_parent.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-                except Exception:
-                    pass
-            # 确保侧边栏可见并重定位
-            try:
-                if self.sidebar_win and self.sidebar_win.winfo_exists():
-                    self.sidebar_win.deiconify()
-                    self._position_sidebar()
-            except Exception:
-                pass
-            # 更新标题
-            self._update_titles_suffix(self.current_game)
-        except Exception as e:
-            self._log_message(f"切换游戏失败: {e}", "ERROR")
+
+    # 移除：不再隐藏主内容容器，统一由 Router 在左右容器装载页面
 
     def _resolve_strategy_name(self) -> str:
         """根据当前游戏解析键位映射策略名，保证向后兼容。
@@ -499,514 +540,102 @@ class MeowFieldAutoPiano:
             pass
         return 'strategy_21key'
 
-    def _show_about(self):
-        """显示关于窗口，加载 README.md 内容"""
-        try:
-            about = tk.Toplevel(self.root)
-            about.title("关于 MeowField AutoPiano")
-            about.geometry("720x540")
-            about.transient(self.root)
-            about.grab_set()
-            frm = ttk.Frame(about)
-            frm.pack(fill=tk.BOTH, expand=True)
-            txt = tk.Text(frm, wrap=tk.WORD)
-            ybar = ttk.Scrollbar(frm, orient=tk.VERTICAL, command=txt.yview)
-            txt.configure(yscrollcommand=ybar.set)
-            txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            ybar.pack(side=tk.RIGHT, fill=tk.Y)
-            readme_path = os.path.join(os.path.dirname(__file__), 'README.md')
-            content = ''
-            try:
-                with open(readme_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            except Exception as e:
-                content = f"无法读取 README.md: {e}"
-            txt.insert(tk.END, content)
-            txt.configure(state=tk.DISABLED)
-        except Exception as e:
-            self._log_message(f"显示关于窗口失败: {e}", "ERROR")
+    # 已移除：关于窗口与游戏切换等页面功能
 
-    def _update_titles_suffix(self, game: str | None):
-        """更新根窗口和UIManager标题的后缀"""
+    def _update_titles_suffix(self, suffix_text: str | None):
+        """更新 UIManager 顶部内嵌标题后缀；根窗口标题保持固定中文。"""
         try:
-            suffix = game if game and game.strip() else None
-            # 更新顶部内嵌标题
+            suffix = suffix_text if suffix_text and str(suffix_text).strip() else None
+            # 更新 UIManager 顶部内嵌标题
             if hasattr(self, 'ui_manager') and hasattr(self.ui_manager, 'set_title_suffix'):
                 self.ui_manager.set_title_suffix(suffix)
-            # 同步根窗口标题
-            # 简化：仅显示游戏名（无版本号和方括号）
-            self.root.title(suffix if suffix else "开放空间")
+            # 根窗口标题固定，不随页面变化
+            self.root.title("MeowField自动演奏程序")
         except Exception:
             pass
     
-    def _create_file_selection_component(self):
-        """创建文件选择组件"""
+    def _create_file_selection_component(self, parent_left=None):
+        """创建文件选择组件（委托组件模块）"""
         try:
-            # 在左侧框架中创建文件选择区域
-            file_frame = ttk.LabelFrame(self.ui_manager.left_frame, text="文件选择", padding="12")
-            file_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-            
-            # 音频文件选择
-            ttk.Label(file_frame, text="音频文件:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
-            self.mp3_path_var = tk.StringVar()
-            mp3_entry = ttk.Entry(file_frame, textvariable=self.mp3_path_var, width=50)
-            mp3_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
-            ttk.Button(file_frame, text="浏览", command=self._browse_mp3).grid(row=0, column=2)
-            
-            # MIDI文件选择
-            ttk.Label(file_frame, text="MIDI文件:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(5, 0))
-            self.midi_path_var = tk.StringVar()
-            midi_entry = ttk.Entry(file_frame, textvariable=self.midi_path_var, width=50)
-            midi_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 10), pady=(5, 0))
-            ttk.Button(file_frame, text="浏览", command=self._browse_midi).grid(row=1, column=2, pady=(5, 0))
-            
-            # 已移除：乐谱文件（LRCp）选择
-            
-            # 转换按钮
-            convert_frame = ttk.Frame(file_frame)
-            convert_frame.grid(row=3, column=0, columnspan=3, pady=(10, 0))
-            
-            ttk.Button(convert_frame, text="音频转MIDI", 
-                      command=self._convert_mp3_to_midi).pack(side=tk.LEFT, padx=(0, 10))
-            # 已移除：MIDI转LRCp
-            ttk.Button(convert_frame, text="批量转换", 
-                      command=self._batch_convert).pack(side=tk.LEFT, padx=(0, 10))
-            
-            # 配置网格权重
-            file_frame.columnconfigure(1, weight=1)
-            
+            target = parent_left if parent_left is not None else self.ui_manager.left_frame
+            comp_file_select.create_file_selection(self, target)
         except Exception as e:
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': f'创建文件选择组件失败: {e}'}, 'App')
-    
-    def _create_playback_control_component(self):
-        """创建播放控制组件"""
+
+    def _create_playback_control_component(self, parent_left=None, include_ensemble: bool = True):
+        """创建播放控制组件（委托组件模块）"""
         try:
-            # 在左侧框架中创建播放控制区域
-            control_frame = ttk.LabelFrame(self.ui_manager.left_frame, text="播放控制", padding="12")
-            control_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-            
-            # 使用 Notebook 进行分页，避免控件拥挤重叠
-            notebook = ttk.Notebook(control_frame)
-            notebook.pack(fill=tk.BOTH, expand=True)
-
-            # 各页签
-            tab_controls = ttk.Frame(notebook)
-            tab_params = ttk.Frame(notebook)
-            tab_progress = ttk.Frame(notebook)
-            tab_playlist = ttk.Frame(notebook)
-            tab_help = ttk.Frame(notebook)
-
-            notebook.add(tab_controls, text="控制")
-            notebook.add(tab_params, text="参数")
-            notebook.add(tab_progress, text="进度")
-            notebook.add(tab_playlist, text="播放列表")
-            notebook.add(tab_help, text="帮助")
-
-            # ——— 控制页 ———
-            mode_frame = ttk.Frame(tab_controls)
-            mode_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
-            ttk.Label(mode_frame, text="演奏模式:").pack(side=tk.LEFT, padx=(0, 10))
-            self.playback_mode = tk.StringVar(value="midi")
-            midi_radio = ttk.Radiobutton(mode_frame, text="MIDI模式", variable=self.playback_mode, value="midi", command=self._on_mode_changed)
-            midi_radio.pack(side=tk.LEFT, padx=(0, 10))
-
-            button_frame = ttk.Frame(tab_controls)
-            button_frame.pack(side=tk.TOP, anchor=tk.W)
-            self._create_auto_play_controls(button_frame)
-            ttk.Button(button_frame, text="播放MIDI", command=self._play_midi).pack(pady=(0, 5))
-            ttk.Button(button_frame, text="停止", command=self._stop_playback).pack()
-
-            # 自定义倒计时（秒）
-            countdown_frame = ttk.Frame(tab_controls)
-            countdown_frame.pack(side=tk.TOP, anchor=tk.W, pady=(6, 0))
-            ttk.Label(countdown_frame, text="倒计时(秒) → ").pack(side=tk.LEFT)
-            self.countdown_seconds_var = tk.IntVar(value=3)
-            ttk.Spinbox(countdown_frame, from_=0, to=30, increment=1, width=6, textvariable=self.countdown_seconds_var).pack(side=tk.LEFT)
-
-            # 移除：MIDI 预处理设置（已迁移到右侧“后处理(应用于解析结果)”）
-
-            # ——— 参数页 ———
-            param_frame = ttk.Frame(tab_params)
-            param_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-            ttk.Label(param_frame, text="速度:").pack(anchor=tk.W)
-            self.tempo_var = tk.DoubleVar(value=1.0)
-            # 使用离散速度选项替代连续滑块
-            tempo_values = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-            self._tempo_combo = ttk.Combobox(param_frame, state="readonly", values=[str(v) for v in tempo_values])
-            # 初始化显示为当前值
-            self._tempo_combo.set(f"{self.tempo_var.get():.2f}")
-            def _on_tempo_select(event=None):
-                try:
-                    val = float(self._tempo_combo.get())
-                    self.tempo_var.set(val)
-                except Exception:
-                    pass
-            self._tempo_combo.bind('<<ComboboxSelected>>', _on_tempo_select)
-            self._tempo_combo.pack(fill=tk.X)
-            ttk.Label(param_frame, text="音量:").pack(anchor=tk.W, pady=(10, 0))
-            self.volume_var = tk.DoubleVar(value=0.7)
-            volume_scale = ttk.Scale(param_frame, from_=0.0, to=1.0, variable=self.volume_var, orient=tk.HORIZONTAL)
-            volume_scale.pack(fill=tk.X)
-            self.debug_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(param_frame, text="调试模式", variable=self.debug_var, command=self._on_debug_toggle).pack(anchor=tk.W, pady=(10, 0))
-            # 播放回调开关：关闭后将不再发出 on_progress/on_complete 等回调到UI，适合低性能模式
-            # 进度回调始终启用（移除回调开关避免混淆）
-
-            # 移除：“高级”标签页（和弦与调度选项改由右侧或使用默认）
-
-            # ——— 进度页 ———
-            progress_frame = ttk.Frame(tab_progress)
-            progress_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-            self.progress_var = tk.DoubleVar()
-            self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
-            self.progress_bar.pack(fill=tk.X, pady=(0, 5))
-            self.time_var = tk.StringVar(value="00:00 / 00:00")
-            time_label = ttk.Label(progress_frame, textvariable=self.time_var)
-            time_label.pack(anchor=tk.W)
-
-            # ——— 播放列表页 ———
-            playlist_container = ttk.Frame(tab_playlist)
-            playlist_container.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-
-            # 播放列表工具栏
-            playlist_toolbar = ttk.Frame(playlist_container)
-            playlist_toolbar.pack(fill=tk.X, pady=(0, 5))
-            ttk.Button(playlist_toolbar, text="添加文件", command=self._add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Button(playlist_toolbar, text="添加文件夹", command=self._add_folder_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Button(playlist_toolbar, text="移除选中", command=self._remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Button(playlist_toolbar, text="清空列表", command=self._clear_playlist).pack(side=tk.LEFT)
-            ttk.Label(playlist_toolbar, text="播放顺序:").pack(side=tk.LEFT, padx=(12, 4))
-            self.playlist_order_var = tk.StringVar(value="顺序")
-            self._playlist_order_combo = ttk.Combobox(playlist_toolbar, textvariable=self.playlist_order_var, state="readonly", width=10,
-                         values=["顺序", "随机", "单曲循环", "列表循环"])
-            self._playlist_order_combo.pack(side=tk.LEFT)
-            # 绑定模式到管理器
-            def _on_order_changed(event=None):
-                try:
-                    if getattr(self, 'playlist', None):
-                        self.playlist.set_order_mode(self.playlist_order_var.get())
-                except Exception:
-                    pass
-            self._playlist_order_combo.bind('<<ComboboxSelected>>', _on_order_changed)
-
-            # 播放列表显示区域
-            playlist_display = ttk.Frame(playlist_container)
-            playlist_display.pack(fill=tk.BOTH, expand=True)
-            columns = ('序号', '文件名', '类型', '时长', '状态')
-            self.playlist_tree = ttk.Treeview(playlist_display, columns=columns, show='headings', height=8)
-            for col in columns:
-                self.playlist_tree.heading(col, text=col)
-                self.playlist_tree.column(col, width=100)
-            playlist_scrollbar = ttk.Scrollbar(playlist_display, orient=tk.VERTICAL, command=self.playlist_tree.yview)
-            self.playlist_tree.configure(yscrollcommand=playlist_scrollbar.set)
-            self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            playlist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-            self.playlist_tree.bind('<Double-1>', self._on_playlist_double_click)
-
-            # ——— 帮助页 ———
-            help_frame = ttk.Frame(tab_help)
-            help_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-            help_text = (
-                "热键说明:\n"
-                "• Ctrl+T: 切换主题\n"
-                "• Ctrl+D: 切换控件密度\n"
-                "• Ctrl+Shift+C: 暂停演奏\n\n"
-                "使用说明:\n"
-                "1. 选择音频文件 → 点击\"音频转MIDI\"进行转换\n"
-                "2. 选择MIDI文件，设置参数\n"
-                "3. 点击\"自动弹琴\"开始演奏\n"
-                "5. 遇到报错不要慌，有点bug是正常的（），启动时控制台那一堆报错不用管，\n遇到其它问题请提issue或者去q群反馈，带好截图和问题描述\n\n"
-                "注意: 新版本不自带PianoTrans（音频转换模型），需要单独下载"
-            )
-            ttk.Label(help_frame, text=help_text, justify=tk.LEFT, wraplength=600).pack(anchor=tk.W, fill=tk.X)
+            target = parent_left if parent_left is not None else self.ui_manager.left_frame
+            comp_playback.create_playback_controls(self, target, include_ensemble=include_ensemble)
         except Exception as e:
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': f'创建播放控制组件失败: {e}'}, 'App')
 
-    def _create_auto_play_controls(self, parent):
-        """创建自动弹琴控制按钮"""
-        # 自动弹琴按钮
-        self.auto_play_button = ttk.Button(parent, text="自动弹琴", command=self._toggle_auto_play)
-        self.auto_play_button.pack(pady=(0, 5))
-        # 暂停/恢复按钮
-        self.pause_button = ttk.Button(parent, text="暂停", command=self._toggle_pause, state="disabled")
-        self.pause_button.pack(pady=(0, 5))
-
-    def _create_playlist_component(self):
-        """创建播放列表组件"""
+    def _create_right_pane(self, parent_right=None):
+        """创建右侧分页（委托组件模块）"""
         try:
-            # 在左侧框架中创建播放列表区域
-            playlist_frame = ttk.LabelFrame(self.ui_manager.left_frame, text="播放列表", padding="12")
-            playlist_frame.grid(row=2, column=0, sticky=(tk.N, tk.S, tk.W, tk.E))
-            self.ui_manager.left_frame.rowconfigure(2, weight=1)
-            
-            # 播放列表工具栏
-            playlist_toolbar = ttk.Frame(playlist_frame)
-            playlist_toolbar.pack(fill=tk.X, pady=(0, 5))
-            
-            ttk.Button(playlist_toolbar, text="添加文件", 
-                      command=self._add_to_playlist).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Button(playlist_toolbar, text="移除选中", 
-                      command=self._remove_from_playlist).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Button(playlist_toolbar, text="清空列表", 
-                      command=self._clear_playlist).pack(side=tk.LEFT)
-            
-            # 播放列表显示区域
-            playlist_display = ttk.Frame(playlist_frame)
-            playlist_display.pack(fill=tk.BOTH, expand=True)
-            
-            # 创建播放列表树形视图
-            columns = ('序号', '文件名', '类型', '时长', '状态')
-            self.playlist_tree = ttk.Treeview(playlist_display, columns=columns, show='headings', height=8)
-            
-            for col in columns:
-                self.playlist_tree.heading(col, text=col)
-                self.playlist_tree.column(col, width=100)
-            
-            # 添加滚动条
-            playlist_scrollbar = ttk.Scrollbar(playlist_display, orient=tk.VERTICAL, command=self.playlist_tree.yview)
-            self.playlist_tree.configure(yscrollcommand=playlist_scrollbar.set)
-            
-            self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            playlist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-            
-            # 绑定双击事件
-            self.playlist_tree.bind('<Double-1>', self._on_playlist_double_click)
-        
-        except Exception as e:
-            self.event_bus.publish(Events.SYSTEM_ERROR, {'message': f'创建播放列表组件失败: {e}'}, 'App')
-
-        
-    
-    def _create_right_pane(self):
-        """创建右侧分页：MIDI解析设置 / 事件表 / 系统日志"""
-        try:
-            # 顶部工具栏（醒目的解析按钮）
-            top_toolbar = ttk.Frame(self.ui_manager.right_frame)
-            top_toolbar.pack(fill=tk.X, pady=(0, 6))
-            parse_btn = ttk.Button(top_toolbar, text="解析当前MIDI", command=self._analyze_current_midi, style=self.ui_manager.accent_button_style)
-            parse_btn.pack(side=tk.LEFT, padx=6, pady=4)
-
-            notebook = ttk.Notebook(self.ui_manager.right_frame)
-            notebook.pack(fill=tk.BOTH, expand=True)
-
-            tab_settings = ttk.Frame(notebook)
-            tab_events = ttk.Frame(notebook)
-            tab_logs = ttk.Frame(notebook)
-            notebook.add(tab_settings, text="MIDI解析设置")
-            notebook.add(tab_events, text="事件表")
-            notebook.add(tab_logs, text="系统日志")
-
-            # —— 解析设置（加滚动条容器）——
-            # 使用 Canvas + Scrollbar 实现整个设置页可滚动
-            settings_canvas = tk.Canvas(tab_settings, highlightthickness=0)
-            settings_scrollbar = ttk.Scrollbar(tab_settings, orient=tk.VERTICAL, command=settings_canvas.yview)
-            settings_inner = ttk.Frame(settings_canvas)
-            def _on_inner_config(event=None):
-                try:
-                    settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
-                except Exception:
-                    pass
-            settings_inner.bind("<Configure>", _on_inner_config)
-            settings_canvas.create_window((0, 0), window=settings_inner, anchor="nw")
-            settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
-            settings_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            settings_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-            # Pitch groups
-            grp_frame = ttk.LabelFrame(settings_inner, text="音高分组选择", padding="8")
-            grp_frame.pack(fill=tk.X, padx=6, pady=6)
-            self.pitch_group_vars = {}
-            row = 0
-            col = 0
-            for name in groups.ORDERED_GROUP_NAMES:
-                var = tk.BooleanVar(value=True)
-                self.pitch_group_vars[name] = var
-                ttk.Checkbutton(grp_frame, text=name, variable=var).grid(row=row, column=col, sticky=tk.W, padx=4, pady=2)
-                col += 1
-                if col % 2 == 0:
-                    row += 1
-                    col = 0
-            btns = ttk.Frame(grp_frame)
-            btns.grid(row=row+1, column=0, columnspan=2, sticky=tk.W)
-            ttk.Button(btns, text="全选", command=lambda: [v.set(True) for v in self.pitch_group_vars.values()]).pack(side=tk.LEFT, padx=(0,6))
-            ttk.Button(btns, text="全不选", command=lambda: [v.set(False) for v in self.pitch_group_vars.values()]).pack(side=tk.LEFT)
-
-            # Melody extraction and channel filter
-            mel_frame = ttk.LabelFrame(settings_inner, text="主旋律提取", padding="8")
-            mel_frame.pack(fill=tk.X, padx=6, pady=6)
-            self.enable_melody_extract_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(mel_frame, text="启用主旋律提取", variable=self.enable_melody_extract_var).grid(row=0, column=0, sticky=tk.W)
-            ttk.Label(mel_frame, text="优先通道").grid(row=0, column=1, sticky=tk.W, padx=(12,0))
-            self.melody_channel_var = tk.StringVar(value="自动")
-            self.melody_channel_combo = ttk.Combobox(mel_frame, textvariable=self.melody_channel_var, state="readonly",
-                                                     values=["自动"] + [str(i) for i in range(16)])
-            self.melody_channel_combo.grid(row=0, column=2, sticky=tk.W)
-            tip = "通道筛选与音高/节奏熵启发式：优先中高音(60-84)，节奏熵较低且连贯的声部更可能是主旋律。"
-            ttk.Label(mel_frame, text=tip, wraplength=520, foreground="#666").grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(6,0))
-            # 熵权重与最小得分
-            ttk.Label(mel_frame, text="熵权重").grid(row=2, column=0, sticky=tk.W, pady=(6,0))
-            self.entropy_weight_var = tk.DoubleVar(value=0.5)
-            ttk.Spinbox(mel_frame, from_=0.0, to=5.0, increment=0.1, textvariable=self.entropy_weight_var, width=8).grid(row=2, column=1, sticky=tk.W)
-            ttk.Label(mel_frame, text="最小得分(过滤力度)").grid(row=2, column=2, sticky=tk.W, padx=(12,0))
-            self.melody_min_score_var = tk.DoubleVar(value=0.0)
-            ttk.Spinbox(mel_frame, from_=-100.0, to=100.0, increment=0.5, textvariable=self.melody_min_score_var, width=10).grid(row=2, column=3, sticky=tk.W)
-            # 挡位（预设更激进）
-            ttk.Label(mel_frame, text="挡位").grid(row=3, column=0, sticky=tk.W, pady=(6,0))
-            self.melody_level_var = tk.StringVar(value="中")
-            self.melody_level_combo = ttk.Combobox(mel_frame, textvariable=self.melody_level_var, state="readonly",
-                                                   values=["弱", "中", "强", "极强"]) 
-            self.melody_level_combo.grid(row=3, column=1, sticky=tk.W)
-            def _apply_melody_level(*_):
-                level = self.melody_level_var.get()
-                # 更激进：提高熵权重与最小得分
-                presets = {
-                    "弱": (0.5, -10.0),
-                    "中": (1.0, 0.0),
-                    "强": (1.5, 5.0),
-                    "极强": (2.5, 12.0),
-                }
-                ew, ms = presets.get(level, (1.0, 0.0))
-                self.entropy_weight_var.set(ew)
-                self.melody_min_score_var.set(ms)
-            self.melody_level_combo.bind('<<ComboboxSelected>>', _apply_melody_level)
-
-            # 提取算法与过滤参数
-            ttk.Label(mel_frame, text="算法").grid(row=4, column=0, sticky=tk.W, pady=(6,0))
-            self.melody_mode_var = tk.StringVar(value="熵启发")
-            self.melody_mode_combo = ttk.Combobox(
-                mel_frame, textvariable=self.melody_mode_var, state="readonly",
-                values=["熵启发", "节拍过滤", "重复过滤", "混合"]
-            )
-            self.melody_mode_combo.grid(row=4, column=1, sticky=tk.W)
-            ttk.Label(mel_frame, text="强度(0-1)").grid(row=4, column=2, sticky=tk.W, padx=(12,0))
-            self.melody_strength_var = tk.DoubleVar(value=0.5)
-            ttk.Spinbox(mel_frame, from_=0.0, to=1.0, increment=0.05, textvariable=self.melody_strength_var, width=8).grid(row=4, column=3, sticky=tk.W)
-            ttk.Label(mel_frame, text="重复惩罚").grid(row=5, column=0, sticky=tk.W, pady=(6,0))
-            self.melody_rep_penalty_var = tk.DoubleVar(value=1.0)
-            ttk.Spinbox(mel_frame, from_=0.0, to=5.0, increment=0.1, textvariable=self.melody_rep_penalty_var, width=8).grid(row=5, column=1, sticky=tk.W)
-
-            # Pre-processing controls (before analysis)
-            pre_frame = ttk.LabelFrame(settings_inner, text="预处理(解析前)", padding="8")
-            pre_frame.pack(fill=tk.X, padx=6, pady=(6,6))
-            self.enable_preproc_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(pre_frame, text="启用预处理(整曲移调以提升白键占比)", variable=self.enable_preproc_var).grid(row=0, column=0, columnspan=3, sticky=tk.W)
-            ttk.Label(pre_frame, text="移调(半音):").grid(row=1, column=0, sticky=tk.W, pady=(6,0))
-            self.pretranspose_semitones_var = tk.IntVar(value=0)
-            ttk.Spinbox(pre_frame, from_=-11, to=11, increment=1, textvariable=self.pretranspose_semitones_var, width=8).grid(row=1, column=1, sticky=tk.W, pady=(6,0))
-            self.pretranspose_auto_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(pre_frame, text="自动选择白键占比最高", variable=self.pretranspose_auto_var).grid(row=1, column=2, sticky=tk.W, padx=(12,0), pady=(6,0))
-            ttk.Label(pre_frame, text="白键占比:").grid(row=1, column=3, sticky=tk.W, padx=(12,0), pady=(6,0))
-            self.pretranspose_white_ratio_var = tk.StringVar(value="-")
-            ttk.Label(pre_frame, textvariable=self.pretranspose_white_ratio_var).grid(row=1, column=4, sticky=tk.W, pady=(6,0))
-
-            # Post-processing controls
-            pp_frame = ttk.LabelFrame(settings_inner, text="后处理(应用于解析结果)", padding="8")
-            pp_frame.pack(fill=tk.X, padx=6, pady=6)
-            self.enable_postproc_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(pp_frame, text="启用后处理", variable=self.enable_postproc_var).grid(row=0, column=0, sticky=tk.W)
-
-            ttk.Label(pp_frame, text="黑键移调").grid(row=0, column=1, sticky=tk.W, padx=(12,0))
-            self.black_transpose_strategy_var = tk.StringVar(value="就近")
-            self.black_transpose_combo = ttk.Combobox(pp_frame, textvariable=self.black_transpose_strategy_var, state="readonly",
-                                                      values=["关闭", "向下", "就近"])
-            self.black_transpose_combo.grid(row=0, column=2, sticky=tk.W)
-            ttk.Label(pp_frame, text="量化窗口(ms)").grid(row=0, column=3, sticky=tk.W, padx=(12,0))
-            self.quantize_window_var = tk.IntVar(value=30)
-            ttk.Spinbox(pp_frame, from_=1, to=200, increment=1, textvariable=self.quantize_window_var, width=8).grid(row=0, column=4, sticky=tk.W)
-            # 高级功能：和弦识别（基于窗口对齐）
-            self.enable_chord_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(pp_frame, text="识别和弦(同窗同按计为和弦)", variable=self.enable_chord_var).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(6,0))
-
-            # 后处理：和弦伴奏设置（固定追加键，不改变旋律）
-            accom_frame = ttk.LabelFrame(settings_inner, text="和弦伴奏(后处理)", padding="8")
-            accom_frame.pack(fill=tk.X, padx=6, pady=(0,6))
-            # 与默认行为一致：默认开启和弦伴奏
-            self.enable_chord_accomp_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(
-                accom_frame,
-                text="启用和弦伴奏 (固定键: z,x,c,v,b,n,m)",
-                variable=self.enable_chord_accomp_var,
-                command=self._on_player_options_changed,
-            ).grid(row=0, column=0, columnspan=2, sticky=tk.W)
-            ttk.Label(accom_frame, text="模式").grid(row=0, column=2, sticky=tk.W, padx=(12,0))
-            # 默认模式与后端保持一致：triad
-            self.chord_accomp_mode_var = tk.StringVar(value="triad")
-            mode_combo = ttk.Combobox(
-                accom_frame,
-                textvariable=self.chord_accomp_mode_var,
-                state="readonly",
-                values=["triad7", "triad", "greedy"],
-            )
-            mode_combo.grid(row=0, column=3, sticky=tk.W)
-            # 模式变化时也实时同步到 AutoPlayer
-            try:
-                mode_combo.bind('<<ComboboxSelected>>', lambda e: self._on_player_options_changed())
-            except Exception:
-                pass
-            ttk.Label(accom_frame, text="最小延音(ms)").grid(row=0, column=4, sticky=tk.W, padx=(12,0))
-            self.chord_accomp_min_sustain_var = tk.IntVar(value=120)
-            ttk.Spinbox(
-                accom_frame,
-                from_=0, to=5000, increment=10,
-                textvariable=self.chord_accomp_min_sustain_var,
-                width=8,
-                command=self._on_player_options_changed,
-            ).grid(row=0, column=5, sticky=tk.W)
-
-            # 解析按钮移至左侧“文件选择”区域的转换工具栏
-
-            # —— 事件表 ——
-            ev_toolbar = ttk.Frame(tab_events)
-            ev_toolbar.pack(fill=tk.X, pady=(6,2), padx=6)
-            ttk.Button(ev_toolbar, text="刷新", command=self._populate_event_table).pack(side=tk.LEFT)
-            ttk.Button(ev_toolbar, text="导出CSV", command=self._export_event_csv).pack(side=tk.LEFT, padx=(6,0))
-            ttk.Button(ev_toolbar, text="导出按键谱", command=self._export_key_notation).pack(side=tk.LEFT, padx=(6,0))
-
-            ev_container = ttk.Frame(tab_events)
-            ev_container.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-            columns = ("序号", "开始(s)", "类型", "音符", "通道", "组", "结束(s)", "时长(s)", "和弦")
-            self.event_tree = ttk.Treeview(ev_container, columns=columns, show='headings')
-            for col in columns:
-                self.event_tree.heading(col, text=col)
-                self.event_tree.column(col, width=100, anchor=tk.CENTER)
-            ybar = ttk.Scrollbar(ev_container, orient=tk.VERTICAL, command=self.event_tree.yview)
-            self.event_tree.configure(yscrollcommand=ybar.set)
-            self.event_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            ybar.pack(side=tk.RIGHT, fill=tk.Y)
-            # 启用单元格编辑：双击进入编辑
-            self.event_tree.bind('<Double-1>', self._on_event_tree_double_click)
-
-            # —— 系统日志 ——
-            log_toolbar = ttk.Frame(tab_logs)
-            log_toolbar.pack(fill=tk.X, pady=(6, 5), padx=6)
-            ttk.Button(log_toolbar, text="清空日志", command=self._clear_log).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Button(log_toolbar, text="保存日志", command=self._save_log).pack(side=tk.LEFT)
-            self.log_text = tk.Text(tab_logs, height=20, width=50)
-            self.log_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0,6))
-            # 初始日志
-            self.log_text.insert(tk.END, "🎹 MeowField AutoPiano v1.0.5 启动成功\n")
-            self.log_text.insert(tk.END, "本软件免费使用，如果你是从其他地方购入说明你已经受骗。请联系b站up主薮薮猫猫举报。\n")
-            self.log_text.insert(tk.END, "支持功能: MP3转MIDI、MIDI播放、自动弹琴、批量转换\n")
-            self.log_text.insert(tk.END, "=" * 50 + "\n")
-            self.log_text.insert(tk.END, "系统就绪，可以开始使用...\n")
-        except Exception as e:
-            self.event_bus.publish(Events.SYSTEM_ERROR, {'message': f'创建右侧分页失败: {e}'}, 'App')
-
-    def _create_bottom_progress(self):
-        """在主窗口左下角创建播放进度显示"""
-        try:
-            bottom = ttk.Frame(self.ui_manager.left_frame)
-            bottom.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(6, 0))
-            self.ui_manager.left_frame.rowconfigure(3, weight=0)
-            self.bottom_progress_var = tk.DoubleVar()
-            self.bottom_progress = ttk.Progressbar(bottom, variable=self.bottom_progress_var, maximum=100)
-            self.bottom_progress.pack(fill=tk.X)
-            self.bottom_time_var = tk.StringVar(value="00:00 / 00:00")
-            ttk.Label(bottom, textvariable=self.bottom_time_var).pack(anchor=tk.W)
-            # 若已有进度条，保持同步
-            self._sync_progress_targets = True
+            target = parent_right if parent_right is not None else self.ui_manager.right_frame
+            comp_right.create_right_pane(self, target)
         except Exception:
             pass
+
+
+    def _create_auto_play_controls(self, parent):
+        """在播放控制区域创建“自动弹琴/暂停”按钮。
+        该方法由 `pages/components/playback_controls.py` 调用。
+        """
+        try:
+            # 行容器
+            row = ttk.Frame(parent)
+            row.pack(side=tk.TOP, anchor=tk.W, pady=(0, 6))
+
+            # 自动弹琴按钮（开始/停止由内部逻辑切换文案）
+            self.auto_play_button = ttk.Button(row, text="自动弹琴", command=self._start_auto_play)
+            self.auto_play_button.pack(side=tk.LEFT, padx=(0, 8))
+
+            # 暂停/恢复按钮（默认禁用，开始后启用）
+            self.pause_button = ttk.Button(row, text="暂停", state="disabled", command=self._pause_or_resume)
+            self.pause_button.pack(side=tk.LEFT)
+
+            # 可视倒计时标签（默认隐藏）
+            try:
+                self.countdown_label = ttk.Label(row, text="")
+                self.countdown_label.pack(side=tk.LEFT, padx=(12,0))
+            except Exception:
+                self.countdown_label = None
+
+            # 倒计时设置（默认启用3秒）
+            try:
+                cfg = ttk.Frame(parent)
+                cfg.pack(side=tk.TOP, anchor=tk.W, pady=(0, 2))
+                ttk.Label(cfg, text="开始前倒计时:").pack(side=tk.LEFT)
+                self.enable_auto_countdown_var = tk.BooleanVar(value=True)
+                ttk.Checkbutton(cfg, variable=self.enable_auto_countdown_var).pack(side=tk.LEFT, padx=(6, 6))
+                self.auto_countdown_seconds_var = tk.IntVar(value=3)
+                ttk.Spinbox(cfg, from_=0, to=30, increment=1, width=6, textvariable=self.auto_countdown_seconds_var).pack(side=tk.LEFT)
+                ttk.Label(cfg, text="秒").pack(side=tk.LEFT, padx=(6,0))
+            except Exception:
+                pass
+        except Exception as e:
+            self._log_message(f"创建自动演奏按钮失败: {e}", "ERROR")
+
+    def _pause_or_resume(self):
+        """切换暂停/恢复。供暂停按钮回调使用。"""
+        try:
+            if self.pause_button.cget("text") == "暂停":
+                self._pause_auto_play()
+            else:
+                self._resume_auto_play()
+        except Exception as e:
+            self._log_message(f"切换暂停/恢复失败: {e}", "ERROR")
+
+    def _create_bottom_progress(self, parent_left=None):
+        """创建左下角进度显示（委托组件模块）。"""
+        try:
+            target = parent_left if parent_left is not None else self.ui_manager.left_frame
+            comp_bottom.create_bottom_progress(self, target)
+        except Exception as e:
+            self._log_message(f"创建底部进度失败: {e}", "ERROR")
+
 
     def _sync_progress(self, value: float, time_text: str):
         """同步进度到底部与原进度标签（若存在）"""
@@ -1289,6 +918,15 @@ class MeowFieldAutoPiano:
     
     def _on_system_shutdown(self, event):
         """系统关闭事件"""
+        try:
+            # 调试输出：捕获到 SYSTEM_SHUTDOWN 事件
+            print("[DEBUG] 收到 SYSTEM_SHUTDOWN 事件，准备调用 root.quit()")
+            try:
+                self._log_message("收到 SYSTEM_SHUTDOWN 事件", "INFO")
+            except Exception:
+                pass
+        except Exception:
+            pass
         self.root.quit()
     
     def _on_theme_changed(self, event):
@@ -1450,87 +1088,39 @@ class MeowFieldAutoPiano:
         messagebox.showinfo("提示", "批量转换功能正在开发中，敬请期待")
     
     def _toggle_auto_play(self):
-        """切换自动弹琴"""
-        # 若正在倒计时，视为取消
-        if getattr(self, '_counting_down', False):
-            try:
-                if hasattr(self, 'root') and getattr(self, '_countdown_job', None):
-                    self.root.after_cancel(self._countdown_job)
-            except Exception:
-                pass
-            self._counting_down = False
-            self._countdown_job = None
-            self.ui_manager.set_status("已取消倒计时")
-            self._log_message("已取消倒计时")
-            self.auto_play_button.configure(text="自动弹琴")
+        """切换自动弹琴（委托控制器）。"""
+        try:
+            if getattr(self, 'playback_controller', None):
+                return self.playback_controller.toggle_auto_play()
+        except Exception:
+            pass
+        # 回退到旧逻辑
+        try:
+            from meowauto.app.controllers.playback_controller import PlaybackController
+            if not getattr(self, 'playback_controller', None):
+                self.playback_controller = PlaybackController(self, getattr(self, 'playback_service', None))
+            return self.playback_controller.toggle_auto_play()
+        except Exception:
+            # 最终回退：不做操作
             return
-
-        if self.auto_play_button.cget("text") == "自动弹琴":
-            # 开始自动弹琴（带倒计时）
-            secs = 0
-            try:
-                secs = int(self.countdown_seconds_var.get()) if hasattr(self, 'countdown_seconds_var') else 0
-            except Exception:
-                secs = 0
-            if secs <= 0:
-                self._start_auto_play()
-                return
-            # 执行倒计时
-            self._counting_down = True
-            self.auto_play_button.configure(text=f"倒计时{secs}s(点击取消)")
-            self.pause_button.configure(state="disabled")
-            self.ui_manager.set_status(f"{secs} 秒后开始自动弹琴...")
-
-            def tick(remaining):
-                if not getattr(self, '_counting_down', False):
-                    return
-                if remaining <= 0:
-                    self._counting_down = False
-                    self._countdown_job = None
-                    self.auto_play_button.configure(text="自动弹琴")
-                    # 开始
-                    self._start_auto_play()
-                    return
-                try:
-                    self.auto_play_button.configure(text=f"倒计时{remaining}s(点击取消)")
-                    self.ui_manager.set_status(f"{remaining} 秒后开始自动弹琴...")
-                except Exception:
-                    pass
-                if hasattr(self, 'root'):
-                    self._countdown_job = self.root.after(1000, lambda: tick(remaining - 1))
-                else:
-                    # 退化处理：无 root.after 时直接开始
-                    self._counting_down = False
-                    self._start_auto_play()
-            tick(secs)
-        else:
-            # 停止自动弹琴
-            self._stop_auto_play()
     
     def _toggle_pause(self):
-        """切换暂停/恢复状态"""
-        # 检查是否有MIDI播放器在播放
-        if hasattr(self, 'midi_player') and self.midi_player and self.midi_player.is_playing:
-            if self.midi_player.is_paused:
-                # 恢复MIDI播放
-                self._resume_midi_play()
-            else:
-                # 暂停MIDI播放
-                self._pause_midi_play()
+        """切换暂停/恢复状态（委托控制器）。"""
+        try:
+            if getattr(self, 'playback_controller', None):
+                return self.playback_controller.toggle_pause()
+        except Exception:
+            pass
+        # 回退到旧逻辑
+        try:
+            from meowauto.app.controllers.playback_controller import PlaybackController
+            if not getattr(self, 'playback_controller', None):
+                self.playback_controller = PlaybackController(self, getattr(self, 'playback_service', None))
+            return self.playback_controller.toggle_pause()
+        except Exception:
+            # 最终回退
+            self._log_message("没有正在播放的内容", "WARNING")
             return
-        
-        # 检查是否有自动演奏器在播放
-        if hasattr(self, 'auto_player') and self.auto_player and self.auto_player.is_playing:
-            if self.auto_player.is_paused:
-                # 恢复自动演奏
-                self._resume_auto_play()
-            else:
-                # 暂停自动演奏
-                self._pause_auto_play()
-            return
-        
-        # 没有正在播放的内容
-        self._log_message("没有正在播放的内容", "WARNING")
     
     def _on_mode_changed(self):
         """演奏模式变化处理"""
@@ -1560,20 +1150,196 @@ class MeowFieldAutoPiano:
         except Exception as e:
             self._log_message(f"应用回放设置失败: {str(e)}", "ERROR")
 
+    # ===================== 播放列表控制器方法 =====================
+    def _add_to_playlist(self):
+        try:
+            filetypes = [
+                ("支持的文件", ".mid .midi .lrcp .mp3 .wav .flac .m4a .aac .ogg"),
+                ("MIDI", ".mid .midi"),
+                ("谱面 LRCp", ".lrcp"),
+                ("音频", ".mp3 .wav .flac .m4a .aac .ogg"),
+                ("所有文件", "*.*"),
+            ]
+            paths = filedialog.askopenfilenames(title="添加到播放列表", filetypes=filetypes)
+            if not paths:
+                return
+            for p in paths:
+                if self.playlist and self.playlist.add_item(p):
+                    self._append_playlist_tree_row(p)
+        except Exception as e:
+            self._log_message(f"添加文件失败: {e}", "ERROR")
+
+    def _import_folder_to_playlist(self):
+        try:
+            folder = filedialog.askdirectory(title="选择文件夹导入")
+            if not folder:
+                return
+            exts = {'.mid','.midi','.lrcp','.mp3','.wav','.flac','.m4a','.aac','.ogg'}
+            for root, _, files in os.walk(folder):
+                for name in files:
+                    if os.path.splitext(name)[1].lower() in exts:
+                        p = os.path.join(root, name)
+                        if self.playlist and self.playlist.add_item(p):
+                            self._append_playlist_tree_row(p)
+        except Exception as e:
+            self._log_message(f"导入文件夹失败: {e}", "ERROR")
+
+    def _remove_from_playlist(self):
+        try:
+            sel = list(self.playlist_tree.selection()) if hasattr(self, 'playlist_tree') else []
+            if not sel:
+                return
+            # 从后往前移除，避免索引变化
+            indices = sorted([int(self.playlist_tree.item(iid,'values')[0]) - 1 for iid in sel], reverse=True)
+            for idx in indices:
+                try:
+                    if self.playlist:
+                        self.playlist.remove_item(idx)
+                finally:
+                    # 删除树节点
+                    for iid in sel:
+                        self.playlist_tree.delete(iid)
+            self._rebuild_playlist_tree()
+        except Exception as e:
+            self._log_message(f"移除失败: {e}", "ERROR")
+
+    def _clear_playlist(self):
+        try:
+            if self.playlist:
+                self.playlist.clear_playlist()
+            if hasattr(self, 'playlist_tree'):
+                for iid in self.playlist_tree.get_children():
+                    self.playlist_tree.delete(iid)
+        except Exception as e:
+            self._log_message(f"清空播放列表失败: {e}", "ERROR")
+
+    def _save_playlist(self):
+        try:
+            if not self.playlist or not self.playlist.playlist_items:
+                messagebox.showinfo("提示", "播放列表为空")
+                return
+            path = filedialog.asksaveasfilename(title="保存播放列表", defaultextension=".json", filetypes=[("JSON","*.json")])
+            if not path:
+                return
+            data = [it['path'] for it in self.playlist.playlist_items]
+            import json
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self._log_message(f"播放列表已保存: {os.path.basename(path)}", "SUCCESS")
+        except Exception as e:
+            self._log_message(f"保存播放列表失败: {e}", "ERROR")
+
+    def _append_playlist_tree_row(self, file_path: str):
+        try:
+            if not hasattr(self, 'playlist_tree') or not self.playlist:
+                return
+            idx = len(self.playlist.playlist_items)
+            item = self.playlist.playlist_items[-1]
+            values = (idx, item.get('name'), item.get('type'), item.get('duration'), item.get('status'))
+            self.playlist_tree.insert('', 'end', values=values)
+        except Exception:
+            pass
+
+    def _rebuild_playlist_tree(self):
+        try:
+            if not hasattr(self, 'playlist_tree') or not self.playlist:
+                return
+            for iid in self.playlist_tree.get_children():
+                self.playlist_tree.delete(iid)
+            for i, it in enumerate(self.playlist.playlist_items, start=1):
+                self.playlist_tree.insert('', 'end', values=(i, it.get('name'), it.get('type'), it.get('duration'), it.get('status')))
+        except Exception:
+            pass
+
+    def _on_playlist_mode_changed(self, *_):
+        try:
+            mode = getattr(self, 'playlist_mode_var', None)
+            mode_str = mode.get() if mode else '单曲'
+            if self.playlist:
+                if mode_str == '随机':
+                    self.playlist.random_play = True
+                    self.playlist.loop_play = False
+                elif mode_str == '循环':
+                    self.playlist.random_play = False
+                    self.playlist.loop_play = True
+                elif mode_str == '顺序':
+                    self.playlist.random_play = False
+                    self.playlist.loop_play = False
+                else:  # 单曲
+                    self.playlist.random_play = False
+                    self.playlist.loop_play = False
+            self._log_message(f"播放模式: {mode_str}")
+        except Exception:
+            pass
+
+    def _play_selected_from_playlist(self):
+        try:
+            if not hasattr(self, 'playlist_tree') or not self.playlist:
+                return
+            sel = self.playlist_tree.selection()
+            if not sel:
+                return
+            # 取首个选中
+            values = self.playlist_tree.item(sel[0], 'values')
+            index = int(values[0]) - 1
+            if self.playlist.set_current_item(index):
+                item = self.playlist.get_current_item()
+                if item and item.get('path'):
+                    # 将路径放入 midi_path_var 并开始
+                    if not hasattr(self, 'midi_path_var'):
+                        self.midi_path_var = tk.StringVar()
+                    self.midi_path_var.set(item['path'])
+                    self._start_auto_play()
+        except Exception as e:
+            self._log_message(f"播放选中失败: {e}", "ERROR")
+
+    def _play_next_from_playlist(self):
+        try:
+            if not self.playlist:
+                return
+            next_item = self.playlist.play_next()
+            if next_item and next_item.get('path'):
+                if not hasattr(self, 'midi_path_var'):
+                    self.midi_path_var = tk.StringVar()
+                self.midi_path_var.set(next_item['path'])
+                self._start_auto_play()
+                self._rebuild_playlist_tree()
+        except Exception as e:
+            self._log_message(f"下一首失败: {e}", "ERROR")
+
+    def _play_prev_from_playlist(self):
+        try:
+            if not self.playlist:
+                return
+            prev_item = self.playlist.play_previous()
+            if prev_item and prev_item.get('path'):
+                if not hasattr(self, 'midi_path_var'):
+                    self.midi_path_var = tk.StringVar()
+                self.midi_path_var.set(prev_item['path'])
+                self._start_auto_play()
+                self._rebuild_playlist_tree()
+        except Exception as e:
+            self._log_message(f"上一首失败: {e}", "ERROR")
+
     def _apply_player_options(self):
         """将 UI 的高级设置应用到 AutoPlayer"""
         try:
             if hasattr(self, 'auto_player') and self.auto_player and hasattr(self.auto_player, 'set_options'):
                 # 仅保留必要选项下发：键位回退与黑键移调
                 enable_key_fallback = bool(self.r_enable_key_fallback_var.get()) if hasattr(self, 'r_enable_key_fallback_var') else True
-                enable_black_transpose = bool(self.enable_black_transpose_var.get()) if hasattr(self, 'enable_black_transpose_var') else True
+                # 回放层禁用黑键移调
+                enable_black_transpose = False
                 black_transpose_strategy = (
-                    'down' if (getattr(self, 'black_transpose_strategy_var', None) and self.black_transpose_strategy_var.get() == '向下优先') else 'nearest'
+                    'down' if (
+                        getattr(self, 'black_transpose_strategy_var', None) and 
+                        str(self.black_transpose_strategy_var.get()) in ('向下', '向下优先')
+                    ) else 'nearest'
                 )
                 # 新增：和弦伴奏选项（默认关闭；UI 尚未提供时使用默认值）
                 enable_chord_accomp = False
                 chord_accomp_mode = 'triad'
                 chord_accomp_min_sustain_ms = 120
+                chord_replace_melody = False
                 try:
                     if hasattr(self, 'enable_chord_accomp_var'):
                         enable_chord_accomp = bool(self.enable_chord_accomp_var.get())
@@ -1581,6 +1347,8 @@ class MeowFieldAutoPiano:
                         chord_accomp_mode = str(self.chord_accomp_mode_var.get()) or 'triad'
                     if hasattr(self, 'chord_accomp_min_sustain_var'):
                         chord_accomp_min_sustain_ms = int(self.chord_accomp_min_sustain_var.get())
+                    if hasattr(self, 'chord_replace_melody_var'):
+                        chord_replace_melody = bool(self.chord_replace_melody_var.get())
                 except Exception:
                     # 保持默认值
                     pass
@@ -1592,6 +1360,7 @@ class MeowFieldAutoPiano:
                     enable_chord_accomp=enable_chord_accomp,
                     chord_accomp_mode=chord_accomp_mode,
                     chord_accomp_min_sustain_ms=chord_accomp_min_sustain_ms,
+                    chord_replace_melody=chord_replace_melody,
                 )
         except Exception as e:
             self._log_message(f"应用回放设置失败: {str(e)}", "ERROR")
@@ -1603,8 +1372,46 @@ class MeowFieldAutoPiano:
             if hasattr(self, 'auto_player') and self.auto_player and self.auto_player.is_playing:
                 self._log_message("自动演奏已在进行中", "WARNING")
                 return
-            # 直接进入MIDI播放
-            self._start_midi_play()
+            # 如有未完成的倒计时，先取消
+            try:
+                if hasattr(self, '_countdown_after_id') and self._countdown_after_id:
+                    self.root.after_cancel(self._countdown_after_id)
+                    self._countdown_after_id = None
+            except Exception:
+                pass
+
+            # 倒计时触发
+            def _do_start():
+                self._start_midi_play()
+                # 清除倒计时可视
+                try:
+                    if getattr(self, 'countdown_label', None):
+                        self.countdown_label.configure(text="")
+                except Exception:
+                    pass
+            try:
+                enabled = bool(getattr(self, 'enable_auto_countdown_var', tk.BooleanVar(value=False)).get())
+                sec = int(getattr(self, 'auto_countdown_seconds_var', tk.IntVar(value=0)).get())
+            except Exception:
+                enabled, sec = False, 0
+            if enabled and sec > 0:
+                def _tick(n: int):
+                    if n <= 0:
+                        self._log_message("开始！", "SUCCESS")
+                        _do_start()
+                        return
+                    # 可视更新 + 日志
+                    try:
+                        if getattr(self, 'countdown_label', None):
+                            self.countdown_label.configure(text=f"{n}s")
+                    except Exception:
+                        pass
+                    self._log_message(f"倒计时: {n}", "INFO")
+                    if hasattr(self, 'root'):
+                        self._countdown_after_id = self.root.after(1000, lambda: _tick(n - 1))
+                self._countdown_after_id = self.root.after(0, lambda: _tick(sec))
+            else:
+                _do_start()
         except Exception as e:
             self._log_message(f"启动自动弹琴失败: {str(e)}", "ERROR")
             messagebox.showerror("错误", f"启动自动弹琴失败:\n{str(e)}")
@@ -1658,53 +1465,80 @@ class MeowFieldAutoPiano:
                     self._log_message("自动演奏已在进行中，请先停止当前演奏", "WARNING")
                     return
                 
-                # 首先尝试从模块管理器获取实例
-                if hasattr(self, 'module_manager') and self.module_manager:
-                    playback_module = self.module_manager.get_module_instance('playback')
-                    if playback_module and 'AutoPlayer' in playback_module:
-                        self.auto_player = playback_module['AutoPlayer']
-                        self._log_message("从模块管理器获取AutoPlayer实例", "INFO")
-                    else:
-                        # 如果模块管理器没有实例，尝试直接导入
-                        from meowauto.playback import AutoPlayer
-                        from meowauto.core import Logger
-                        logger = Logger()
-                        self.auto_player = AutoPlayer(logger)
-                        self._log_message("直接导入AutoPlayer模块", "INFO")
-                else:
-                    # 模块管理器不可用，直接导入
-                    from meowauto.playback import AutoPlayer
-                    from meowauto.core import Logger
-                    logger = Logger()
-                    self.auto_player = AutoPlayer(logger)
-                    self._log_message("直接导入AutoPlayer模块", "INFO")
-                
-                # 应用 UI 调试模式到 AutoPlayer
-                try:
-                    if hasattr(self, 'debug_var') and hasattr(self.auto_player, 'set_debug'):
-                        self.auto_player.set_debug(bool(self.debug_var.get()))
-                except Exception:
-                    pass
-                
-                # 设置回调（按开关控制进度更新；完成回调保持启用以维持自动下一首）
-                enable_cb = True
-                try:
-                    enable_cb = bool(self.playback_callbacks_enabled_var.get())
-                except Exception:
+                # 服务层启动自动演奏
+                if not getattr(self, 'playback_service', None):
+                    try:
+                        from meowauto.app.services.playback_service import PlaybackService
+                        self.playback_service = PlaybackService()
+                    except Exception:
+                        self.playback_service = None
+
+                success = False
+                if getattr(self, 'playback_service', None):
+                    # 确保 service 内部已初始化，保持 self.auto_player 引用可用于 UI 检测
+                    try:
+                        self.playback_service.init_players()
+                        self.auto_player = self.playback_service.auto_player
+                    except Exception:
+                        pass
+
+                    # 组装回调
                     enable_cb = True
-                self.auto_player.set_callbacks(
-                    on_start=lambda: self._log_message("自动演奏已开始", "SUCCESS"),
-                    on_pause=lambda: self._log_message("自动演奏已暂停", "INFO"),
-                    on_resume=lambda: self._log_message("自动演奏已恢复", "INFO"),
-                    on_stop=lambda: self._log_message("自动演奏已停止"),
-                    on_progress=(lambda p: self._on_progress_update(p)) if enable_cb else None,
-                    on_complete=lambda: self._on_playback_complete(),
-                    on_error=lambda msg: self._log_message(f"自动演奏错误: {msg}", "ERROR")
-                )
-                
-                # 根据文件类型选择演奏模式
-                if file_type == "MIDI文件":
-                    # 使用持久化的21键映射（若管理器不可用则回退到默认）
+                    try:
+                        enable_cb = bool(self.playback_callbacks_enabled_var.get())
+                    except Exception:
+                        enable_cb = True
+                    try:
+                        self.playback_service.set_auto_callbacks(
+                            on_start=lambda: self._log_message("自动演奏已开始", "SUCCESS"),
+                            on_pause=lambda: self._log_message("自动演奏已暂停", "INFO"),
+                            on_resume=lambda: self._log_message("自动演奏已恢复", "INFO"),
+                            on_stop=lambda: self._log_message("自动演奏已停止"),
+                            on_progress=(lambda p: self._on_progress_update(p)) if enable_cb else None,
+                            on_complete=lambda: self._on_playback_complete(),
+                            on_error=lambda msg: self._log_message(f"自动演奏错误: {msg}", "ERROR"),
+                        )
+                    except Exception:
+                        pass
+
+                    # 收集 options（等价于 _apply_player_options 但不直接依赖 self.auto_player）
+                    enable_key_fallback = bool(self.r_enable_key_fallback_var.get()) if hasattr(self, 'r_enable_key_fallback_var') else True
+                    enable_black_transpose = bool(self.enable_black_transpose_var.get()) if hasattr(self, 'enable_black_transpose_var') else True
+                    black_transpose_strategy = (
+                        'down' if (
+                            getattr(self, 'black_transpose_strategy_var', None) and 
+                            str(self.black_transpose_strategy_var.get()) in ('向下', '向下优先')
+                        ) else 'nearest'
+                    )
+                    enable_chord_accomp = False
+                    chord_accomp_mode = 'triad'
+                    chord_accomp_min_sustain_ms = 120
+                    try:
+                        if hasattr(self, 'enable_chord_accomp_var'):
+                            enable_chord_accomp = bool(self.enable_chord_accomp_var.get())
+                        if hasattr(self, 'chord_accomp_mode_var'):
+                            chord_accomp_mode = str(self.chord_accomp_mode_var.get()) or 'triad'
+                        if hasattr(self, 'chord_accomp_min_sustain_var'):
+                            chord_accomp_min_sustain_ms = int(self.chord_accomp_min_sustain_var.get())
+                    except Exception:
+                        pass
+                    try:
+                        # 黑键移调为后处理，这里禁用
+                        self.playback_service.configure_auto_player(
+                            debug=(bool(self.debug_var.get()) if hasattr(self, 'debug_var') else None),
+                            options=dict(
+                                enable_key_fallback=enable_key_fallback,
+                                enable_black_transpose=False,
+                                black_transpose_strategy='nearest',
+                                enable_chord_accomp=enable_chord_accomp,
+                                chord_accomp_mode=chord_accomp_mode,
+                                chord_accomp_min_sustain_ms=chord_accomp_min_sustain_ms,
+                            ),
+                        )
+                    except Exception:
+                        pass
+
+                    # key mapping
                     try:
                         if hasattr(self, 'keymap_manager') and self.keymap_manager:
                             default_key_mapping = self.keymap_manager.get_mapping()
@@ -1714,7 +1548,12 @@ class MeowFieldAutoPiano:
                     except Exception:
                         from meowauto.config.key_mapping_manager import DEFAULT_MAPPING
                         default_key_mapping = DEFAULT_MAPPING
-                    # 若存在与当前文件匹配的已解析音符，则直接使用它们进行回放，绕过后处理
+
+                    # 分析结果复用与策略名
+                    try:
+                        strategy_name = self._resolve_strategy_name()
+                    except Exception:
+                        strategy_name = "strategy_21key"
                     use_analyzed = False
                     try:
                         if getattr(self, 'analysis_notes', None) and getattr(self, 'analysis_file', ''):
@@ -1723,32 +1562,20 @@ class MeowFieldAutoPiano:
                     except Exception:
                         use_analyzed = False
 
-                    if use_analyzed:
-                        # 使用解析结果：仍需应用一次和弦/调度相关设置
-                        self._apply_player_options()
-                        try:
-                            strategy_name = self._resolve_strategy_name()
-                        except Exception:
-                            strategy_name = "strategy_21key"
-                        self._log_message(f"准备自动演奏(事件)：当前游戏={self.current_game}，策略={strategy_name}", "INFO")
-                        success = self.auto_player.start_auto_play_midi_events(self.analysis_notes, tempo=self.tempo_var.get(), key_mapping=default_key_mapping, strategy_name=strategy_name)
-                    else:
-                        # 在使用内部解析前，应用一次左侧回放设置
-                        self._apply_player_options()
-                        # 回退到内部解析
-                        try:
-                            strategy_name = self._resolve_strategy_name()
-                        except Exception:
-                            strategy_name = "strategy_21key"
-                        self._log_message(f"准备自动演奏(MIDI)：当前游戏={self.current_game}，策略={strategy_name}", "INFO")
-                        success = self.auto_player.start_auto_play_midi(midi_path, tempo=self.tempo_var.get(), key_mapping=default_key_mapping, strategy_name=strategy_name)
+                    success = bool(self.playback_service.start_auto_play_from_path(
+                        midi_path,
+                        tempo=self.tempo_var.get(),
+                        key_mapping=default_key_mapping,
+                        strategy_name=strategy_name,
+                        use_analyzed=use_analyzed,
+                        analyzed_notes=(self.analysis_notes if use_analyzed else None),
+                    ))
                 else:
-                    # 其他文件类型，使用模拟模式
-                    success = True
-                
+                    success = False
+
                 if success:
                     # 更新按钮状态
-                    self.auto_play_button.configure(text="停止弹琴")
+                    self.auto_play_button.configure(text="停止弹琴", command=self._stop_auto_play)
                     self.pause_button.configure(text="暂停", state="normal")
                     self.ui_manager.set_status(f"自动弹琴已开始: {file_name}")
                     self._log_message(f"开始自动弹琴: {file_name} ({file_type})", "SUCCESS")
@@ -1785,29 +1612,9 @@ class MeowFieldAutoPiano:
                         pass
                     
             except ImportError as e:
-                # 如果自动演奏模块不可用，使用模拟模式
-                self._log_message(f"自动演奏模块不可用，使用模拟模式: {e}", "WARNING")
-                
-                # 更新按钮状态
-                self.auto_play_button.configure(text="停止弹琴")
-                self.pause_button.configure(text="暂停", state="normal")
-                self.ui_manager.set_status(f"自动弹琴已开始: {file_name}")
-                self._log_message(f"开始自动弹琴: {file_name} ({file_type})", "SUCCESS")
-                
-                # 更新播放列表状态（如果是从播放列表播放的）
-                try:
-                    selected = self.playlist_tree.selection()
-                    if selected:
-                        self.playlist_tree.set(selected[0], "状态", "正在播放")
-                except Exception:
-                    pass
-                
-                # 进度由真实回调驱动
-                # 启动自动连播watchdog兜底
-                try:
-                    self._schedule_auto_next_watchdog()
-                except Exception:
-                    pass
+                # 服务层/自动演奏模块不可用
+                self._log_message(f"自动演奏模块不可用: {e}", "ERROR")
+                raise
             
         except Exception as e:
             self._log_message(f"MIDI模式演奏失败: {str(e)}", "ERROR")
@@ -1818,16 +1625,28 @@ class MeowFieldAutoPiano:
     def _stop_auto_play(self):
         """停止自动弹琴"""
         try:
-            # 停止实际的自动演奏
-            if hasattr(self, 'auto_player') and self.auto_player:
-                try:
+            # 停止实际的自动演奏（委托服务层）
+            try:
+                if getattr(self, 'playback_service', None):
+                    self.playback_service.stop_auto_only(getattr(self, 'auto_player', None))
+                elif hasattr(self, 'auto_player') and self.auto_player:
+                    # 向后兼容：若服务未初始化，直接调用旧实例
                     self.auto_player.stop_auto_play()
-                except Exception as e:
-                    self._log_message(f"停止自动演奏器失败: {str(e)}", "WARNING")
+            except Exception as e:
+                self._log_message(f"停止自动演奏器失败: {str(e)}", "WARNING")
             
             # 更新按钮状态
-            self.auto_play_button.configure(text="自动弹琴")
+            self.auto_play_button.configure(text="自动弹琴", command=self._start_auto_play)
             self.pause_button.configure(text="暂停", state="disabled")
+            # 取消倒计时并清空显示
+            try:
+                if hasattr(self, '_countdown_after_id') and self._countdown_after_id:
+                    self.root.after_cancel(self._countdown_after_id)
+                    self._countdown_after_id = None
+                if getattr(self, 'countdown_label', None):
+                    self.countdown_label.configure(text="")
+            except Exception:
+                pass
             self.ui_manager.set_status("自动弹琴已停止")
             self._log_message("自动弹琴已停止")
             # 关闭watchdog
@@ -2058,14 +1877,8 @@ class MeowFieldAutoPiano:
             )
             if not filename:
                 return
-            import csv
-            # 使用与定义时一致的列
-            columns = ("序号", "开始(s)", "类型", "音符", "通道", "组", "结束(s)", "时长(s)", "和弦")
-            with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.writer(f)
-                writer.writerow(columns)
-                for item in self.event_tree.get_children():
-                    writer.writerow(self.event_tree.item(item)['values'])
+            # 使用导出工具模块，保持列结构一致
+            export_event_csv(self.event_tree, filename)
             self._log_message(f"事件CSV已导出: {filename}", "SUCCESS")
             messagebox.showinfo("成功", f"事件CSV已导出到:\n{filename}")
         except Exception as e:
@@ -2117,71 +1930,8 @@ class MeowFieldAutoPiano:
                     rows.append((float(start_s), int(note)))
                     if isinstance(chord, str):
                         chords_by_time[round(float(start_s), 6)].add(chord)
-            # 按开始时间排序并按同一时间分组（和弦）
-            bucket = defaultdict(list)
-            for st, n in rows:
-                bucket[round(st, 6)].append(n)
-            times = sorted(bucket.keys())
-            # 度数映射（C大调，黑键就近到白键），返回 (区间 L/M/H, 度数 '1'..'7')
-            def midi_to_reg_deg(n: int) -> tuple[str, str]:
-                pc = n % 12
-                white_map = {0: '1', 2: '2', 4: '3', 5: '4', 7: '5', 9: '6', 11: '7'}
-                if pc not in white_map:
-                    # 就近到白键
-                    for d in (1, -1, 2, -2):
-                        cand = (pc + d) % 12
-                        if cand in white_map:
-                            pc = cand
-                            break
-                deg = white_map.get(pc, '1')
-                # 分组：<C4 为 L，C4..B4 为 M，>=C5 为 H（边界外延伸容错）
-                if n < 60:
-                    reg = 'L'
-                elif n <= 71:
-                    reg = 'M'
-                else:
-                    reg = 'H'
-                return reg, deg
-            # 键位映射
-            LOW = {'1':'a','2':'s','3':'d','4':'f','5':'g','6':'h','7':'j'}
-            MID = {'1':'q','2':'w','3':'e','4':'r','5':'t','6':'y','7':'u'}
-            HIGH = {'1':'1','2':'2','3':'3','4':'4','5':'5','6':'6','7':'7'}
-            CHORD_KEYS_ORDER = ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'G7']
-            CHORD_MAP = {'C':'z','Dm':'x','Em':'c','F':'v','G':'b','Am':'n','G7':'m'}
-            def to_key(reg: str, deg: str) -> str:
-                if reg == 'L':
-                    return LOW.get(deg, 'a')
-                if reg == 'M':
-                    return MID.get(deg, 'q')
-                return HIGH.get(deg, '1')
-            # 固定空格粒度（BPM 控件已移除）：1 空格 = 固定时长
-            unit = 0.3
-            # 生成文本：同一时间点内，将和弦键（若有）放在最前，然后是音符键；多键同刻用方括号聚合
-            parts = []
-            last_t = None
-            for t in times:
-                if last_t is not None:
-                    delta = max(0.0, t - last_t)
-                    spaces = int(round(delta / unit))
-                    parts.append(' ' * max(1, spaces))
-                # 构建本刻需要按下的键位
-                keys = []
-                # 和弦键（若存在且在映射表中）
-                present_chords = [c for c in CHORD_KEYS_ORDER if c in chords_by_time.get(t, set())]
-                for cname in present_chords:
-                    keys.append(CHORD_MAP[cname])
-                # 音符键
-                chord_notes = sorted(bucket[t])
-                for n in chord_notes:
-                    reg, deg = midi_to_reg_deg(n)
-                    keys.append(to_key(reg, deg))
-                token = ''.join(keys)
-                if len(keys) > 1:
-                    parts.append(f"[{token}]")
-                else:
-                    parts.append(token)
-                last_t = t
-            content = ''.join(parts)
+            # 构建按键谱文本（迁移到工具模块）
+            content = build_key_notation(rows, chords_by_time, unit=0.3)
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(content)
             self._log_message(f"按键谱已导出: {filename}", "SUCCESS")
@@ -2192,52 +1942,68 @@ class MeowFieldAutoPiano:
     
 
     def _stop_playback(self):
-        """停止播放"""
+        """停止播放（委托服务层）"""
         try:
-            # 停止MIDI播放
-            if hasattr(self, 'midi_player') and self.midi_player:
-                try:
-                    self.midi_player.stop_midi()
-                    self._log_message("MIDI播放已停止")
-                except Exception as e:
-                    self._log_message(f"停止MIDI播放失败: {str(e)}", "WARNING")
-            
-            # 停止自动演奏
-            if hasattr(self, 'auto_player') and self.auto_player:
-                try:
-                    self.auto_player.stop_auto_play()
-                    self._log_message("自动演奏已停止")
-                except Exception as e:
-                    self._log_message(f"停止自动演奏失败: {str(e)}", "WARNING")
-            
-            # 无进度模拟逻辑
-            
+            try:
+                if getattr(self, 'playback_service', None):
+                    self.playback_service.stop_all()
+                else:
+                    # 向后兼容：若服务未初始化，直接尝试旧实例
+                    if hasattr(self, 'midi_player') and self.midi_player:
+                        self.midi_player.stop_midi()
+                    if hasattr(self, 'auto_player') and self.auto_player:
+                        self.auto_player.stop_auto_play()
+                self._log_message("MIDI播放已停止")
+                self._log_message("自动演奏已停止")
+            except Exception:
+                pass
+
             # 重置进度
-            self.progress_var.set(0)
-            self.time_var.set("00:00 / 00:00")
-            
+            try:
+                self.progress_var.set(0)
+                self.time_var.set("00:00 / 00:00")
+            except Exception:
+                pass
+
             # 禁用暂停按钮
             if hasattr(self, 'pause_button'):
                 self.pause_button.configure(text="暂停", state="disabled")
+            # 重置自动弹琴按钮文本
+            if hasattr(self, 'auto_play_button'):
+                try:
+                    self.auto_play_button.configure(text="自动弹琴", command=self._start_auto_play)
+                except Exception:
+                    pass
+            # 取消倒计时并清空显示
+            try:
+                if hasattr(self, '_countdown_after_id') and self._countdown_after_id:
+                    self.root.after_cancel(self._countdown_after_id)
+                    self._countdown_after_id = None
+                if getattr(self, 'countdown_label', None):
+                    self.countdown_label.configure(text="")
+            except Exception:
+                pass
             
             self.ui_manager.set_status("播放已停止")
             self._log_message("播放已停止")
             
             # 更新播放列表状态
-            selected = self.playlist_tree.selection()
-            if selected:
-                self.playlist_tree.set(selected[0], "状态", "已停止")
+            try:
+                selected = self.playlist_tree.selection()
+                if selected:
+                    self.playlist_tree.set(selected[0], "状态", "已停止")
+            except Exception:
+                pass
             # 关闭watchdog
             try:
                 self._cancel_auto_next_watchdog()
             except Exception:
                 pass
-            
         except Exception as e:
             self._log_message(f"停止播放失败: {str(e)}", "ERROR")
 
     def _play_midi(self):
-        """播放左上选择的MIDI文件（独立播放器）"""
+        """播放左上选择的MIDI文件（委托服务层）"""
         try:
             midi_path = self.midi_path_var.get() if hasattr(self, 'midi_path_var') else ''
             if not midi_path:
@@ -2248,50 +2014,31 @@ class MeowFieldAutoPiano:
                 return
             self.ui_manager.set_status("正在播放MIDI...")
             self._log_message("开始播放MIDI文件")
-            from meowauto.playback import MidiPlayer
-            from meowauto.core import Logger
-            logger = Logger()
-            self.midi_player = MidiPlayer(logger)
-            # 参数
             tempo = float(self.tempo_var.get()) if hasattr(self, 'tempo_var') else 1.0
             volume = float(self.volume_var.get()) if hasattr(self, 'volume_var') else 0.7
-            try:
-                self.midi_player.set_tempo(tempo)
-            except Exception:
-                pass
-            try:
-                self.midi_player.set_volume(volume)
-            except Exception:
-                pass
-            # 回调
-            try:
-                self.midi_player.set_callbacks(
-                    on_start=lambda: self._log_message("MIDI播放已开始", "SUCCESS"),
-                    on_pause=lambda: self._log_message("MIDI播放已暂停", "INFO"),
-                    on_resume=lambda: self._log_message("MIDI播放已恢复", "INFO"),
-                    on_stop=lambda: self._log_message("MIDI播放已停止"),
-                    on_progress=(lambda p: self._on_progress_update(p)),
-                    on_complete=lambda: self._on_playback_complete(),
-                    on_error=lambda msg: self._log_message(f"MIDI播放错误: {msg}", "ERROR")
-                )
-            except Exception:
-                pass
-            # 开始播放
             ok = False
             try:
-                ok = bool(self.midi_player.play_midi(midi_path, progress_callback=self._on_progress_update))
+                if getattr(self, 'playback_service', None):
+                    ok = bool(self.playback_service.play_midi(
+                        midi_path, tempo=tempo, volume=volume, on_progress=self._on_progress_update
+                    ))
+                else:
+                    ok = False
             except Exception as e:
                 self._log_message(f"启动MIDI播放失败: {e}", "ERROR")
             if ok:
                 self._log_message("MIDI播放成功", "SUCCESS")
                 self.ui_manager.set_status("MIDI播放中...")
                 if hasattr(self, 'pause_button'):
-                    self.pause_button.configure(text="暂停", state="normal")
+                    self.pause_button.configure(text="暂停", state="正常" if hasattr(self.pause_button, 'state') else "normal")
+                    try:
+                        self.pause_button.configure(state="normal")
+                    except Exception:
+                        pass
             else:
                 self._log_message("MIDI播放失败", "ERROR")
                 self.ui_manager.set_status("MIDI播放失败")
                 messagebox.showerror("错误", "MIDI播放失败，请检查文件格式")
-                
         except ImportError:
             self._log_message("MIDI播放模块不可用", "ERROR")
             messagebox.showerror("错误", "MIDI播放模块不可用，请检查meowauto模块")
@@ -2332,6 +2079,158 @@ class MeowFieldAutoPiano:
                     self._log_message(f"恢复MIDI失败: {e}", "WARNING")
         except Exception:
             pass
+    
+    def _pause_auto_play(self):
+        """暂停自动演奏（若支持）"""
+        try:
+            if getattr(self, 'playback_service', None):
+                self.playback_service.pause_auto_only(getattr(self, 'auto_player', None))
+                self._log_message("自动演奏已暂停")
+                if hasattr(self, 'pause_button'):
+                    self.pause_button.configure(text="恢复")
+            elif hasattr(self, 'auto_player') and self.auto_player and hasattr(self.auto_player, 'pause_auto_play'):
+                self.auto_player.pause_auto_play()
+                self._log_message("自动演奏已暂停")
+                if hasattr(self, 'pause_button'):
+                    self.pause_button.configure(text="恢复")
+        except Exception as e:
+            self._log_message(f"暂停自动演奏失败: {e}", "WARNING")
+
+    def _resume_auto_play(self):
+        """恢复自动演奏（若支持）"""
+        try:
+            if getattr(self, 'playback_service', None):
+                self.playback_service.resume_auto_only(getattr(self, 'auto_player', None))
+                self._log_message("自动演奏已恢复")
+                if hasattr(self, 'pause_button'):
+                    self.pause_button.configure(text="暂停")
+            elif hasattr(self, 'auto_player') and self.auto_player and hasattr(self.auto_player, 'resume_auto_play'):
+                self.auto_player.resume_auto_play()
+                self._log_message("自动演奏已恢复")
+                if hasattr(self, 'pause_button'):
+                    self.pause_button.configure(text="暂停")
+        except Exception as e:
+            self._log_message(f"恢复自动演奏失败: {e}", "WARNING")
+
+    # ===== 合奏：网络时钟与统一开始 =====
+    def _ensure_playback_service(self):
+        try:
+            if not getattr(self, 'playback_service', None):
+                from meowauto.app.services.playback_service import PlaybackService
+                self.playback_service = PlaybackService()
+            # 确保 players 初始化，并缓存 auto_player 引用
+            try:
+                self.playback_service.init_players()
+                self.auto_player = self.playback_service.auto_player
+            except Exception:
+                pass
+        except Exception:
+            self.playback_service = None
+
+    def _enable_network_clock(self):
+        """启用公网对时并立即同步。"""
+        try:
+            self._ensure_playback_service()
+            if not getattr(self, 'playback_service', None):
+                self._log_message("播放服务不可用，无法启用网络时钟", "ERROR")
+                return
+            ok = bool(self.playback_service.use_network_clock())
+            if ok:
+                self._log_message("已启用网络时钟并完成同步", "SUCCESS")
+            else:
+                self._log_message("启用网络时钟失败，可能无法访问NTP服务器", "WARNING")
+        except Exception as e:
+            self._log_message(f"启用网络时钟异常: {e}", "ERROR")
+
+    def _sync_network_clock(self):
+        """手动对时：若已有网络时钟则调用其 sync()，否则尝试启用一次网络对时。"""
+        try:
+            self._ensure_playback_service()
+            if not getattr(self, 'playback_service', None):
+                self._log_message("播放服务不可用，无法对时", "ERROR")
+                return
+            provider = getattr(self.playback_service, 'clock_provider', None)
+            ok = False
+            try:
+                if provider and hasattr(provider, 'sync'):
+                    ok = bool(provider.sync())
+            except Exception:
+                ok = False
+            if not ok:
+                ok = bool(self.playback_service.use_network_clock())
+            if ok:
+                self._log_message("对时成功", "SUCCESS")
+            else:
+                self._log_message("对时失败，请检查网络", "WARNING")
+        except Exception as e:
+            self._log_message(f"对时异常: {e}", "ERROR")
+
+    def _use_local_clock(self):
+        """切回本地时钟。"""
+        try:
+            self._ensure_playback_service()
+            if not getattr(self, 'playback_service', None):
+                self._log_message("播放服务不可用，无法切回本地时钟", "ERROR")
+                return
+            self.playback_service.use_local_clock()
+            self._log_message("已切回本地时钟", "INFO")
+        except Exception as e:
+            self._log_message(f"切回本地时钟异常: {e}", "ERROR")
+
+    def _ensemble_plan_start(self):
+        """按计划延时开始当前选定的演奏（基于播放列表/MIDI路径）。"""
+        try:
+            delay_s = 0.0
+            try:
+                delay_s = float(self.ensemble_delay_var.get()) if hasattr(self, 'ensemble_delay_var') else 0.0
+            except Exception:
+                delay_s = 0.0
+            delay_ms = max(0, int(delay_s * 1000))
+            if delay_ms == 0:
+                self._log_message("立即开始(计划延时为0)", "INFO")
+                self._start_midi_play()
+                return
+            self._log_message(f"已计划在 {delay_s:.2f} 秒后开始", "INFO")
+            if hasattr(self, 'root'):
+                self.root.after(delay_ms, self._start_midi_play)
+            else:
+                # 兜底：阻塞式等待（不建议，但保持功能可用）
+                try:
+                    time.sleep(delay_s)
+                except Exception:
+                    pass
+                self._start_midi_play()
+        except Exception as e:
+            self._log_message(f"计划开始失败: {e}", "ERROR")
+
+    def _ensemble_unified_start(self):
+        """统一开始：倒计时后开始播放。"""
+        try:
+            count = 3
+            try:
+                count = int(self.ensemble_countdown_var.get()) if hasattr(self, 'ensemble_countdown_var') else 3
+            except Exception:
+                count = 3
+
+            def _tick(n: int):
+                try:
+                    if n <= 0:
+                        self._log_message("开始！", "SUCCESS")
+                        self._start_midi_play()
+                        return
+                    self._log_message(f"统一开始倒计时: {n}", "INFO")
+                    if hasattr(self, 'root'):
+                        self.root.after(1000, lambda: _tick(n - 1))
+                    else:
+                        time.sleep(1)
+                        _tick(n - 1)
+                except Exception:
+                    self._start_midi_play()
+
+            # 若勾选“使用右侧解析事件”，解析逻辑已在 _start_midi_play 内部进行匹配复用
+            _tick(max(0, count))
+        except Exception as e:
+            self._log_message(f"统一开始失败: {e}", "ERROR")
     
     def _add_file_to_playlist(self, file_path, file_type):
         """添加文件到播放列表"""
@@ -2680,7 +2579,26 @@ class MeowFieldAutoPiano:
     def _on_closing(self):
         """应用程序关闭事件"""
         try:
+            # 启动保护：启动后短时间内忽略关闭请求（防止误触发）
+            if getattr(self, '_startup_protect', False):
+                print("[DEBUG] 启动保护启用，忽略关闭请求")
+                return
+            # 关闭确认
+            try:
+                if not getattr(self, '_allow_close', False):
+                    if messagebox.askokcancel("退出", "确定要退出 MeowField AutoPiano 吗？") is False:
+                        print("[DEBUG] 用户取消关闭")
+                        return
+                    else:
+                        # 用户确认后，允许关闭
+                        self._allow_close = True
+                else:
+                    # 已被 Ctrl+Q 授权关闭
+                    pass
+            except Exception:
+                pass
             # 发布系统关闭事件
+            print("[DEBUG] 触发 _on_closing，发布 SYSTEM_SHUTDOWN 并销毁 root")
             self.event_bus.publish(Events.SYSTEM_SHUTDOWN, {}, 'App')
             
             # 销毁窗口
@@ -2689,6 +2607,30 @@ class MeowFieldAutoPiano:
         except Exception as e:
             print(f"关闭应用程序时发生错误: {e}")
             self.root.destroy()
+
+    def _request_close(self):
+        """通过快捷键授权关闭（Ctrl+Q）。"""
+        try:
+            print("[DEBUG] 收到 Ctrl+Q，授权关闭")
+            self._allow_close = True
+            # 主动触发协议处理
+            self._on_closing()
+        except Exception:
+            pass
+
+    def _on_root_destroy(self, event=None):
+        """根窗口销毁事件（用于调试 mainloop 提前退出）"""
+        try:
+            widget = event.widget if event is not None else None
+            is_root = (widget is self.root) if widget is not None else True
+            name = str(widget) if widget is not None else 'root'
+            print(f"[DEBUG] <Destroy> 捕获: widget={name}, is_root={is_root}")
+            try:
+                self._log_message(f"窗口销毁事件: {name}, is_root={is_root}", "INFO")
+            except Exception:
+                pass
+        except Exception:
+            pass
     
     def run(self):
         """运行应用程序"""

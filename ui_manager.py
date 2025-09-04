@@ -148,17 +148,40 @@ class UIManager:
         self.paned_window = ttk.PanedWindow(content_frame, orient=tk.HORIZONTAL)
         self.paned_window.pack(fill=tk.BOTH, expand=True)
         
-        # 左侧框架 - 主要功能区域
+        # 左侧框架 - 主要功能区域（内含：侧边栏容器 + 左侧内容容器）
         self.left_frame = ttk.Frame(self.paned_window)
         self.paned_window.add(self.left_frame, weight=2)
+        # 在 left_frame 内构建一个左右壳层：左为侧边栏、右为实际页面内容
+        self.left_shell = ttk.Frame(self.left_frame)
+        self.left_shell.pack(fill=tk.BOTH, expand=True)
+        # 使用 grid 将 sidebar 与内容分两列布置
+        self.left_shell.grid_rowconfigure(0, weight=1)
+        # 列0为侧边栏，使用 minsize 控制宽度以实现动画
+        self.left_shell.grid_columnconfigure(0, weight=0, minsize=200)
+        # 列1为内容区，填充扩展
+        self.left_shell.grid_columnconfigure(1, weight=1)
+        # 侧边栏容器（列0）
+        self.left_sidebar_holder = ttk.Frame(self.left_shell)
+        self.left_sidebar_holder.grid(row=0, column=0, sticky=tk.NSEW)
+        try:
+            # 防止子组件压缩父容器尺寸，确保列最小宽度生效
+            self.left_sidebar_holder.grid_propagate(False)
+        except Exception:
+            pass
+        # 页面内容容器（列1）：供 Router 左侧内容挂载
+        self.left_content_frame = ttk.Frame(self.left_shell)
+        self.left_content_frame.grid(row=0, column=1, sticky=tk.NSEW)
         
         # 右侧框架 - 日志和状态区域
         self.right_frame = ttk.Frame(self.paned_window)
         self.paned_window.add(self.right_frame, weight=1)
         
         # 配置左右框架的网格权重，确保子组件能正确扩展
-        self.left_frame.columnconfigure(0, weight=1)
-        self.left_frame.rowconfigure(2, weight=1)  # 播放列表行可以扩展
+        try:
+            self.left_frame.columnconfigure(0, weight=1)
+            self.left_frame.rowconfigure(0, weight=1)
+        except Exception:
+            pass
         
         self.right_frame.columnconfigure(0, weight=1)
         self.right_frame.rowconfigure(0, weight=1)

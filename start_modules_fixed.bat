@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
-title MeowField AutoPiano v1.0.5 - 模块修复版
+title MeowField AutoPiano v1.0.6 - 模块修复版
 
 echo.
 echo ========================================
-echo    MeowField AutoPiano v1.0.5
+echo    MeowField AutoPiano v1.0.6
 echo    模块修复版启动脚本
 echo ========================================
 echo.

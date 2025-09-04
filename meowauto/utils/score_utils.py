@@ -4,7 +4,8 @@
 """
 
 import re
-from typing import List, Optional
+from typing import List, Optional, Iterable, Tuple, Dict, Any
+
 from dataclasses import dataclass
 
 @dataclass
@@ -109,6 +110,78 @@ class ScoreUtils:
         # 按开始时间排序
         events.sort(key=lambda e: e.start)
         return events
+
+    # ===== 按键谱导出 =====
+    def export_key_notation(self, events, window_ms: int = 50) -> str:
+        """
+        将事件序列导出为“按键谱”文本：
+        - 50ms(可配)内按下的多个键视为“同时按下”，以括号包裹，如: (q e t)
+        - 支持两种输入结构：
+          1) 回放事件字典: {'start_time': float, 'type': 'note_on'|'note_off', 'key': 'q'...}
+          2) 本模块 Event: Event(start: float, end: float, keys: List[str])，按 start 作为按下时间
+        - 仅统计“按下”事件（note_on 或 Event.keys 的 start）
+        返回：多行文本，每一组占一行。
+        """
+        presses: List[Tuple[float, str]] = []
+        try:
+            iterable = list(events)
+        except Exception:
+            iterable = []
+        for ev in iterable:
+            try:
+                if isinstance(ev, dict):
+                    if ev.get('type') == 'note_on' and ev.get('key'):
+                        t = float(ev.get('start_time', 0.0))
+                        k = str(ev.get('key'))
+                        presses.append((t, k))
+                elif isinstance(ev, Event):
+                    t = float(getattr(ev, 'start', 0.0))
+                    ks = list(getattr(ev, 'keys', []) or [])
+                    for k in ks:
+                        presses.append((t, str(k)))
+            except Exception:
+                continue
+
+        if not presses:
+            return ""
+
+        presses.sort(key=lambda x: x[0])
+        gap = max(0, int(window_ms)) / 1000.0
+
+        lines: List[str] = []
+        group: List[Tuple[float, str]] = []
+        group_start: Optional[float] = None
+        for t, k in presses:
+            if group_start is None:
+                group_start = t
+                group.append((t, k))
+                continue
+            if (t - group_start) <= gap:
+                group.append((t, k))
+            else:
+                # flush
+                keys = [kk for _, kk in sorted(group, key=lambda x: x[1])]
+                if len(keys) == 1:
+                    lines.append(keys[0])
+                else:
+                    lines.append("(" + " ".join(keys) + ")")
+                # new group
+                group = [(t, k)]
+                group_start = t
+
+        if group:
+            keys = [kk for _, kk in sorted(group, key=lambda x: x[1])]
+            if len(keys) == 1:
+                lines.append(keys[0])
+            else:
+                lines.append("(" + " ".join(keys) + ")")
+
+        return "\n".join(lines)
+
+    def export_key_notation_inline(self, events, window_ms: int = 50) -> str:
+        """将“按键谱”导出为单行（空格分隔）。"""
+        text = self.export_key_notation(events, window_ms=window_ms)
+        return " ".join([line.strip() for line in text.splitlines() if line.strip()])
 
 # 保持向后兼容的函数
 def _ts_match_to_seconds(m: re.Match) -> float:

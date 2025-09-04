@@ -170,18 +170,82 @@ def _dominant_ioi_period(times: List[float]) -> Optional[float]:
     return best_bin * 0.02
 
 
-def _channel_scores(notes: List[Dict[str, Any]], entropy_weight: float) -> Dict[int, float]:
+def _channel_scores(
+    notes: List[Dict[str, Any]],
+    entropy_weight: float,
+    *,
+    prefer_programs: Optional[List[int]] = None,
+    prefer_name_keywords: Optional[List[str]] = None,
+    density_target: float = 3.0,
+    density_weight: float = 0.5,
+) -> Dict[int, float]:
+    """给各通道打分（更稳健）：
+    - 自适应音高焦点：以全局中位数±12为主旋律高发区。
+    - 乐器/音色加权：lead类program/名称包含solo/lead等加分。
+    - 节奏密度惩罚：过稠或过稀都扣分，目标密度默认为3音/秒。
+    - 熵（越稳定越好）仍生效。
+    """
     by_ch: Dict[int, List[Dict[str, Any]]] = {}
+    all_pitches: List[int] = []
     for n in notes:
         by_ch.setdefault(n['channel'], []).append(n)
+        try:
+            all_pitches.append(int(n.get('note', 0)))
+        except Exception:
+            pass
+
+    # 全局音高中位数估计旋律区中心
+    import statistics
+    if all_pitches:
+        try:
+            med = int(statistics.median(all_pitches))
+        except Exception:
+            med = 72
+    else:
+        med = 72  # C5 作为兜底
+    low = max(40, med - 12)
+    high = min(96, med + 12)
+
+    prefer_programs = prefer_programs or [40, 41, 42, 43, 44, 45, 46, 47, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88]
+    prefer_name_keywords = prefer_name_keywords or ["lead", "melody", "vocal", "violin", "flute", "sax", "oboe", "solo"]
+
     scores: Dict[int, float] = {}
+    # 全曲时长用于密度
+    try:
+        total_time = max((float(n.get('end_time', 0.0)) for n in notes), default=0.0)
+    except Exception:
+        total_time = 0.0
+
     for ch, arr in by_ch.items():
         arr_sorted = sorted(arr, key=lambda x: x['start_time'])
-        pitches = [n['note'] for n in arr]
-        focus_hits = sum(1 for p in pitches if 60 <= p <= 84)
+        pitches = [int(n.get('note', 0)) for n in arr]
+        focus_hits = sum(1 for p in pitches if low <= p <= high)
         ioi = [max(0.0, arr_sorted[i]['start_time'] - arr_sorted[i-1]['start_time']) for i in range(1, len(arr_sorted))]
         ent = _rhythm_entropy(ioi)
-        scores[ch] = float(focus_hits) - float(entropy_weight) * float(ent)
+
+        # program/name boost
+        prog_vals = {n.get('program') for n in arr}
+        prog_boost = 0.0
+        for pv in prog_vals:
+            try:
+                if pv in prefer_programs:
+                    prog_boost += 1.0
+            except Exception:
+                pass
+        name_vals = {str(n.get('instrument_name', '')).lower() for n in arr}
+        name_boost = 0.0
+        for nm in name_vals:
+            if any(kw in nm for kw in prefer_name_keywords):
+                name_boost += 1.0
+
+        # density penalty（按通道自身密度，也与全曲时长关联以避免短样本放大）
+        if total_time > 0.0:
+            density = len(arr) / max(1e-3, total_time)
+            density_penalty = density_weight * abs(float(density) - float(density_target))
+        else:
+            density_penalty = 0.0
+
+        scores[ch] = float(focus_hits) + prog_boost + name_boost - float(entropy_weight) * float(ent) - density_penalty
     return scores
 
 
@@ -284,7 +348,11 @@ def _enforce_monophony(notes: List[Dict[str, Any]], window: float = 0.06, prefer
 def extract_melody(notes: List[Dict[str, Any]], prefer_channel: Optional[int] = None,
                    entropy_weight: float = 0.5, min_score: Optional[float] = None,
                    mode: str = 'entropy', strength: float = 0.5,
-                   repetition_penalty: float = 1.0) -> List[Dict[str, Any]]:
+                   repetition_penalty: float = 1.0,
+                   prefer_programs: Optional[List[int]] = None,
+                   prefer_name_keywords: Optional[List[str]] = None,
+                   density_target: float = 3.0,
+                   density_weight: float = 0.5) -> List[Dict[str, Any]]:
     """
     主旋律提取：支持多种模式
     - mode='entropy': 原有策略（默认），通过中高音命中与节奏熵评分选择通道
@@ -301,7 +369,13 @@ def extract_melody(notes: List[Dict[str, Any]], prefer_channel: Optional[int] = 
         ew = float(entropy_weight)
     except Exception:
         ew = 0.5
-    scores = _channel_scores(notes, ew)
+    scores = _channel_scores(
+        notes, ew,
+        prefer_programs=prefer_programs,
+        prefer_name_keywords=prefer_name_keywords,
+        density_target=density_target,
+        density_weight=density_weight,
+    )
     if not scores:
         return []
     chosen: List[Dict[str, Any]]
@@ -331,13 +405,22 @@ def extract_melody(notes: List[Dict[str, Any]], prefer_channel: Optional[int] = 
     s = max(0.0, min(1.0, float(strength)))
     if m == 'beat':
         seq = _filter_by_beat_similarity(chosen, strength=s)
-        return _enforce_monophony(seq, window=0.06 + 0.04*(1.0 - s), prefer='highest')
-    if m == 'repetition':
+        result = _enforce_monophony(seq, window=0.06 + 0.04*(1.0 - s), prefer='highest')
+    elif m == 'repetition':
         seq = _filter_by_repetition(chosen, strength=s, pitch_repeat_penalty=float(repetition_penalty))
-        return _enforce_monophony(seq, window=0.06 + 0.04*(1.0 - s), prefer='highest')
-    if m == 'hybrid':
+        result = _enforce_monophony(seq, window=0.06 + 0.04*(1.0 - s), prefer='highest')
+    elif m == 'hybrid':
         tmp = _filter_by_repetition(chosen, strength=s, pitch_repeat_penalty=float(repetition_penalty))
         seq = _filter_by_beat_similarity(tmp, strength=s)
-        return _enforce_monophony(seq, window=0.06 + 0.04*(1.0 - s), prefer='highest')
-    # 默认：熵启发（通道选择 + 可选单声部约束，强度>0则应用）
-    return _enforce_monophony(chosen, window=0.08 + 0.05*(1.0 - s), prefer='highest') if s > 0 else chosen
+        result = _enforce_monophony(seq, window=0.06 + 0.04*(1.0 - s), prefer='highest')
+    else:
+        # 默认：熵启发（通道选择 + 可选单声部约束，强度>0则应用）
+        result = _enforce_monophony(chosen, window=0.08 + 0.05*(1.0 - s), prefer='highest') if s > 0 else chosen
+
+    # 兜底：若过滤过度导致为空，回退到所选通道的「力度优先/时值优先」TOP样本
+    if not result:
+        arr = sorted(chosen, key=lambda x: (int(x.get('velocity', 0)), float(x.get('duration', 0.0))), reverse=True)
+        k = min(16, len(arr))
+        # 再施加单声部约束
+        return _enforce_monophony(arr[:k], window=0.08, prefer='highest') if k > 0 else []
+    return result

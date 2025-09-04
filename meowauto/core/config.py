@@ -42,6 +42,35 @@ class ConfigManager:
                 else:
                     for k, v in ui_default.items():
                         cfg["ui"].setdefault(k, v)
+                # 兼容注入 playback 默认项
+                playback_default = {
+                    "keymap_profile": "piano"
+                }
+                if "playback" not in cfg or not isinstance(cfg.get("playback"), dict):
+                    cfg["playback"] = playback_default
+                else:
+                    for k, v in playback_default.items():
+                        cfg["playback"].setdefault(k, v)
+                # 兼容注入 NTP 默认项
+                ntp_default = {
+                    "servers": [
+                        "ntp.ntsc.ac.cn",
+                        "time.apple.com",
+                        "time1.cloud.tencent.com",
+                        "time2.cloud.tencent.com",
+                        "time3.cloud.tencent.com",
+                        "time4.cloud.tencent.com",
+                        "time5.cloud.tencent.com",
+                        "pool.ntp.org",
+                    ],
+                    "timeout": 1.5,
+                    "max_tries": 5,
+                }
+                if "ntp" not in cfg or not isinstance(cfg.get("ntp"), dict):
+                    cfg["ntp"] = ntp_default
+                else:
+                    for k, v in ntp_default.items():
+                        cfg["ntp"].setdefault(k, v)
                 return cfg
             else:
                 # 创建默认配置
@@ -66,6 +95,23 @@ class ConfigManager:
                 "note_duration_multiplier": 1.0,
                 "enable_logging": True,
                 "default_volume": 0.7
+            },
+            "playback": {
+                "keymap_profile": "piano"
+            },
+            "ntp": {
+                "servers": [
+                    "ntp.ntsc.ac.cn",
+                    "time.apple.com",
+                    "time1.cloud.tencent.com",
+                    "time2.cloud.tencent.com",
+                    "time3.cloud.tencent.com",
+                    "time4.cloud.tencent.com",
+                    "time5.cloud.tencent.com",
+                    "pool.ntp.org",
+                ],
+                "timeout": 1.5,
+                "max_tries": 5,
             },
             "ui": {
                 "theme_name": "flatly",
