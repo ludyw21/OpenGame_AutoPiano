@@ -1,170 +1,156 @@
 @echo off
-chcp 65001 >nul
-title MeowField AutoPiano v1.0.6 - 管理员模式 (修复版)
-
-echo.
-echo ========================================
-echo    MeowField AutoPiano v1.0.6
-echo    管理员模式启动脚本 (修复版)
-echo ========================================
-echo.
-echo 本软件免费使用，如果你是从其他地方购入说明你已经受骗。请联系b站up主薮薮猫猫举报。
-
-:: 切换到脚本所在目录
+setlocal
+rem Pure batch launcher for MeowField AutoPiano (UTF-8 safe output)
 cd /d "%~dp0"
 
-:: 检查管理员权限
-net session >nul 2>&1
-if %errorLevel% == 0 (
-    echo ✓ 已获得管理员权限
+rem Force console to UTF-8 for Python I/O (messages below stay ASCII)
+chcp 65001 >nul
+
+rem App directory handling
+set "BASE_DIR=%~dp0"
+set "APP_DIR=%BASE_DIR%app"
+set "DID_PUSHD=0"
+if exist "%APP_DIR%" (
+  echo Using app directory: %APP_DIR%
+  pushd "%APP_DIR%"
+  set "DID_PUSHD=1"
 ) else (
-    echo ❌ 需要管理员权限运行
-    echo 请右键选择"以管理员身份运行"
-    pause
-    exit /b 1
+  echo App directory not found. Running in base directory.
+  set "APP_DIR=%BASE_DIR%"
 )
 
-:: 选择Python命令（优先 py -3，回退 python）
+rem Environment for UTF-8 and cleaner output
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+set "PYTHONDONTWRITEBYTECODE=1"
+
+rem Admin check (warn only, do not stop)
+net session >nul 2>&1
+if %errorlevel%==0 (
+  echo Admin privilege OK
+) else (
+  echo WARNING: Not running as Administrator. Some features may require admin.
+)
+
+rem Pick Python command (prefer py -3)
 set "PY_CMD="
 where py >nul 2>&1 && (set "PY_CMD=py -3")
 if not defined PY_CMD (
-    where python >nul 2>&1 && (set "PY_CMD=python")
+  where python >nul 2>&1 && (set "PY_CMD=python")
+)
+if not defined PY_CMD (
+  echo ERROR: Python not found in PATH. Please install Python 3.8+.
+  pause
+  if "%DID_PUSHD%"=="1" popd
+  endlocal & exit /b 1
 )
 
-:: 检查Python是否安装
-echo 正在检查Python环境...
+echo Checking Python...
 %PY_CMD% --version >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ❌ Python未安装或未添加到PATH
-    echo 请先安装Python 3.8+
-    pause
-    exit /b 1
+if %errorlevel% neq 0 (
+  echo ERROR: Python not working. Please fix your Python installation.
+  pause
+  if "%DID_PUSHD%"=="1" popd
+  endlocal & exit /b 1
 )
-
 for /f "tokens=*" %%i in ('%PY_CMD% --version 2^>^&1') do set PYTHON_VERSION=%%i
-echo ✓ Python环境检查通过: %PYTHON_VERSION%
+echo %PYTHON_VERSION%
 
-:: 检查Python版本
-%PY_CMD% -c "import sys; exit(0 if sys.version_info >= (3, 8) else 1)" >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ❌ Python版本过低，需要3.8+
-    pause
-    exit /b 1
+%PY_CMD% -c "import sys; exit(0 if sys.version_info>=(3,8) else 1)" >nul 2>&1
+if %errorlevel% neq 0 (
+  echo ERROR: Python 3.8+ is required.
+  pause
+  if "%DID_PUSHD%"=="1" popd
+  endlocal & exit /b 1
 )
 
-:: 依赖安装：优先使用 requirements.txt；否则逐项检查必要依赖
 echo.
-echo 正在检查/安装依赖包...
+echo Checking/installing dependencies...
 if exist requirements.txt (
-    echo 检测到 requirements.txt，执行一键安装...
-    %PY_CMD% -m pip install -r requirements.txt
-    if %errorLevel% neq 0 (
-        echo ❌ 依赖安装失败，请检查网络或权限
-        pause
-        exit /b 1
-    )
+  echo Found requirements.txt, installing...
+  %PY_CMD% -m pip install -r requirements.txt
+  if %errorlevel% neq 0 (
+    echo ERROR: Failed to install dependencies from requirements.txt
+    pause
+    if "%DID_PUSHD%"=="1" popd
+    endlocal & exit /b 1
+  )
 ) else (
-    echo 未找到 requirements.txt，逐项检查必要依赖...
-    rem tkinter 为内置，直接检测
-    %PY_CMD% -c "import tkinter; print('tkinter OK')" >nul 2>&1 || (
-        echo ❌ tkinter 不可用，请安装带有 tkinter 的 Python 版本
-        pause & exit /b 1
-    )
-    rem ttkbootstrap（可选）
-    %PY_CMD% -c "import ttkbootstrap" >nul 2>&1 || %PY_CMD% -m pip install ttkbootstrap>=1.10.1
-    rem mido（必须）
-    %PY_CMD% -c "import mido" >nul 2>&1 || %PY_CMD% -m pip install mido>=1.3.0
-    if %errorLevel% neq 0 ( echo ❌ mido 安装失败 & pause & exit /b 1 )
-    rem pygame（必须）
-    %PY_CMD% -c "import pygame" >nul 2>&1 || %PY_CMD% -m pip install pygame>=2.5.2
-    if %errorLevel% neq 0 ( echo ❌ pygame 安装失败 & pause & exit /b 1 )
-    rem keyboard（必须）
-    %PY_CMD% -c "import keyboard" >nul 2>&1 || %PY_CMD% -m pip install keyboard>=0.13.5
-    if %errorLevel% neq 0 ( echo ❌ keyboard 安装失败 & pause & exit /b 1 )
+  echo requirements.txt not found. Checking minimal requirements...
+  %PY_CMD% -c "import tkinter" >nul 2>&1 || (
+    echo ERROR: tkinter not available. Please install Python with tkinter.
+    pause & if "%DID_PUSHD%"=="1" popd & endlocal & exit /b 1
+  )
+  %PY_CMD% -c "import ttkbootstrap" >nul 2>&1 || %PY_CMD% -m pip install ttkbootstrap>=1.10.1
+  %PY_CMD% -c "import mido" >nul 2>&1 || %PY_CMD% -m pip install mido>=1.3.0
+  if %errorlevel% neq 0 ( echo ERROR: mido install failed & pause & if "%DID_PUSHD%"=="1" popd & endlocal & exit /b 1 )
+  %PY_CMD% -c "import pygame" >nul 2>&1 || %PY_CMD% -m pip install pygame>=2.5.2
+  if %errorlevel% neq 0 ( echo ERROR: pygame install failed & pause & if "%DID_PUSHD%"=="1" popd & endlocal & exit /b 1 )
+  %PY_CMD% -c "import keyboard" >nul 2>&1 || %PY_CMD% -m pip install keyboard>=0.13.5
+  if %errorlevel% neq 0 ( echo ERROR: keyboard install failed & pause & if "%DID_PUSHD%"=="1" popd & endlocal & exit /b 1 )
 )
-echo ✓ 依赖检查完成
+echo Dependencies OK
 
-:: 创建必要目录
 echo.
-echo 正在创建必要目录...
-if not exist "output" (
-    mkdir output
-    echo ✓ 已创建 output 目录
-) else (
-    echo ✓ output 目录已存在
-)
+echo Preparing directories...
+if not exist "output" ( mkdir output & echo Created output ) else ( echo output exists )
+if not exist "temp"   ( mkdir temp   & echo Created temp   ) else ( echo temp exists )
+if not exist "logs"   ( mkdir logs   & echo Created logs   ) else ( echo logs exists )
+echo Directories ready
 
-if not exist "temp" (
-    mkdir temp
-    echo ✓ 已创建 temp 目录
-) else (
-    echo ✓ temp 目录已存在
-)
-
-if not exist "logs" (
-    mkdir logs
-    echo ✓ 已创建 logs 目录
-) else (
-    echo ✓ logs 目录已存在
-)
-
-echo ✓ 目录结构检查完成
-
-:: 尝试直接运行Python脚本
 echo.
-echo 🚀 正在启动 MeowField AutoPiano...
-echo.
+echo Launching MeowField AutoPiano...
 
-:: 首先尝试运行 start.py
-echo 尝试运行 start.py...
-%PY_CMD% start.py
-if %errorLevel% == 0 (
-    echo ✓ start.py 运行成功
+set "LAUNCH_OK=0"
+
+rem Prefer explicit app/start.py if present
+if exist "start.py" (
+  echo Trying start.py ...
+  %PY_CMD% start.py
+  if %errorlevel%==0 (
+    set "LAUNCH_OK=1"
     goto :end
+  )
+) else (
+  rem If we are not inside app dir (no start.py found), try using absolute path
+  if exist "%APP_DIR%\start.py" (
+    echo Trying %APP_DIR%\start.py ...
+    %PY_CMD% "%APP_DIR%\start.py"
+    if %errorlevel%==0 (
+      set "LAUNCH_OK=1"
+      goto :end
+    )
+  )
 )
 
-:: 如果 start.py 失败，尝试运行 main.py
-echo start.py 运行失败，尝试运行 main.py...
-%PY_CMD% main.py
-if %errorLevel% == 0 (
-    echo ✓ main.py 运行成功
+echo start.py not available or failed. Trying main.py ...
+if exist "main.py" (
+  %PY_CMD% main.py
+  if %errorlevel%==0 (
+    set "LAUNCH_OK=1"
     goto :end
+  )
 )
 
-:: 如果都失败了，尝试直接运行 app.py
-echo main.py 运行失败，尝试直接运行 app.py...
-%PY_CMD% -c "
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.abspath('app.py')))
-try:
-    from app import MeowFieldAutoPiano
-    app = MeowFieldAutoPiano()
-    app.run()
-except Exception as e:
-    print(f'启动失败: {e}')
-    import traceback
-    traceback.print_exc()
-    input('按回车键退出...')
-"
+echo main.py failed. Trying app.py class entry ...
+%PY_CMD% -c "import sys,os,traceback; sys.path.insert(0, os.getcwd()); from app import MeowFieldAutoPiano; app=MeowFieldAutoPiano(); app.run()"
+if %errorlevel%==0 (
+  set "LAUNCH_OK=1"
+  goto :end
+)
+
+echo.
+echo ERROR: Application exited with error. See messages above.
+pause
+if "%DID_PUSHD%"=="1" popd
+endlocal & exit /b 1
 
 :end
-:: 如果程序异常退出，暂停显示错误信息
-if %errorLevel% neq 0 (
-    echo.
-    echo ❌ 程序异常退出，错误代码: %errorLevel%
-    echo.
-    echo 可能的解决方案:
-    echo 1. 检查Python版本是否为3.8+
-    echo 2. 确保所有依赖包已正确安装
-    echo 3. 检查meowauto模块是否完整
-    echo 4. 尝试使用普通模式启动 (start_normal.bat)
-    echo.
-    echo 请检查错误信息并联系开发者
-    pause
+if "%LAUNCH_OK%"=="1" (
+  echo Application exited normally.
+) else (
+  echo Application exited abnormally.
 )
-
-echo.
-echo 👋 程序已退出
-pause
-
+if "%DID_PUSHD%"=="1" popd
+endlocal & exit /b 0
