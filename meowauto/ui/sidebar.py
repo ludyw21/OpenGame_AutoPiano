@@ -41,6 +41,14 @@ class Sidebar:
         ttk.Button(self.inst_frame, text="贝斯", command=lambda: self.on_action("inst-bass")).pack(padx=0, pady=4, fill=tk.X)
         ttk.Button(self.inst_frame, text="架子鼓", command=lambda: self.on_action("inst-drums")).pack(padx=0, pady=4, fill=tk.X)
 
+        # 工具分组
+        ttk.Separator(self._container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 4))
+        tools_label = ttk.Label(self._container, text="工具", anchor=tk.W)
+        tools_label.pack(padx=6, pady=(2, 0), fill=tk.X)
+        self.tools_frame = ttk.Frame(self._container)
+        self.tools_frame.pack(padx=6, pady=4, fill=tk.X)
+        ttk.Button(self.tools_frame, text="音频转MIDI", command=lambda: self.on_action("tool-audio2midi")).pack(padx=0, pady=4, fill=tk.X)
+
         # 常用按钮（精简后暂留为空，保留结构便于后续扩展）
         self._buttons = []
 
@@ -91,7 +99,7 @@ class Sidebar:
                 b.pack_forget()
             except Exception:
                 pass
-        for w in (getattr(self, 'inst_frame', None),):
+        for w in (getattr(self, 'inst_frame', None), getattr(self, 'tools_frame', None)):
             try:
                 if w:
                     w.pack_forget()
@@ -101,6 +109,10 @@ class Sidebar:
     def _show_contents(self):
         try:
             self.inst_frame.pack(padx=6, pady=4, fill=tk.X)
+        except Exception:
+            pass
+        try:
+            self.tools_frame.pack(padx=6, pady=4, fill=tk.X)
         except Exception:
             pass
         for b in self._buttons:

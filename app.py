@@ -24,6 +24,7 @@ from event_bus import event_bus, Events
 from module_manager import ModuleManager
 from ui_manager import UIManager
 from meowauto.midi import analyzer, groups
+from meowauto.midi.partitioner import CombinedInstrumentPartitioner, TrackChannelPartitioner
 from meowauto.ui.sidebar import Sidebar
 from router import Router
 from pages.solo import SoloPage
@@ -33,7 +34,7 @@ from pages.components import file_select as comp_file_select
 from pages.components import playback_controls as comp_playback
 from pages.components import right_pane as comp_right
 from pages.components import bottom_progress as comp_bottom
-# 新增：乐器板块页面
+# 新增：乐器板块页面 与 工具页面
 try:
     from pages.instruments.epiano import EPianoPage  # type: ignore
     from pages.instruments.guitar import GuitarPage  # type: ignore
@@ -41,6 +42,10 @@ try:
     from pages.instruments.drums import DrumsPage  # type: ignore
 except Exception:
     EPianoPage = GuitarPage = BassPage = DrumsPage = None  # type: ignore
+try:
+    from pages.tools.audio2midi import Audio2MidiPage  # type: ignore
+except Exception:
+    Audio2MidiPage = None  # type: ignore
 from meowauto.playback.playlist_manager import PlaylistManager
 from meowauto.core import Logger
 from meowauto.utils.exporters.key_notation import build_key_notation
@@ -138,6 +143,12 @@ class MeowFieldAutoPiano:
                         # 传入真实的 DrumsController，并把 app 引用传给页面以复用文件选择/播放列表
                         ctrl = DrumsController(self.playback_service) if DrumsController else self
                         self.router.register('inst:drums', DrumsPage(controller=ctrl, app_ref=self))
+                except Exception:
+                    pass
+                # 注册工具页面
+                try:
+                    if Audio2MidiPage:
+                        self.router.register('tool:audio2midi', Audio2MidiPage(controller=self))
                 except Exception:
                     pass
             except Exception:
@@ -457,10 +468,9 @@ class MeowFieldAutoPiano:
             self._sidebar_last_w = w
             self.sidebar_current_width = w
             # 通过 grid 列的 minsize 实现侧边栏宽度动画
-            shell.grid_columnconfigure(0, minsize=w)
-            # 不强制 update，交由事件循环刷新
         except Exception:
             pass
+
 
     def _on_sidebar_action(self, key: str):
         """侧边栏按钮回调"""
@@ -495,7 +505,7 @@ class MeowFieldAutoPiano:
                     title = f"{self.current_instrument}"
                     if getattr(self, 'router', None):
                         self.router.show('inst:guitar', title=title)
-                    self.ui_manager.set_status('已切换至吉他板块（占位）')
+                    self.ui_manager.set_status('已切换至吉他板块')
                 except Exception:
                     pass
                 return
@@ -519,26 +529,16 @@ class MeowFieldAutoPiano:
                 except Exception:
                     pass
                 return
-        except Exception as e:
-            self._log_message(f"侧边栏操作失败: {e}", "ERROR")
-
-    # 移除：不再隐藏主内容容器，统一由 Router 在左右容器装载页面
-
-    def _resolve_strategy_name(self) -> str:
-        """根据当前游戏解析键位映射策略名，保证向后兼容。
-        开放空间/默认/原神 -> strategy_21key
-        光遇 -> strategy_sky_3x5
-        其他未知 -> strategy_21key
-        """
-        try:
-            game = getattr(self, 'current_game', '开放空间')
-            if game in ('默认', '开放空间', '原神'):
-                return 'strategy_21key'
-            if game == '光遇':
-                return 'strategy_sky_3x5'
+            if key == 'tool-audio2midi':
+                try:
+                    if getattr(self, 'router', None):
+                        self.router.show('tool:audio2midi', title="音频转MIDI")
+                    self.ui_manager.set_status('已切换至 音频转MIDI 工具')
+                except Exception:
+                    pass
+                return
         except Exception:
             pass
-        return 'strategy_21key'
 
     # 已移除：关于窗口与游戏切换等页面功能
 
@@ -570,11 +570,16 @@ class MeowFieldAutoPiano:
         except Exception as e:
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': f'创建播放控制组件失败: {e}'}, 'App')
 
-    def _create_right_pane(self, parent_right=None):
-        """创建右侧分页（委托组件模块）"""
+    def _create_right_pane(self, parent_right=None, *, show_midi_parse: bool = True, show_events: bool = True, show_logs: bool = True):
+        """创建右侧分页（委托组件模块）
+        参数：
+        - show_midi_parse: 是否显示“解析当前MIDI”按钮与“MIDI解析设置”页签
+        - show_events: 是否显示“事件表”页签
+        - show_logs: 是否显示“系统日志”页签
+        """
         try:
             target = parent_right if parent_right is not None else self.ui_manager.right_frame
-            comp_right.create_right_pane(self, target)
+            comp_right.create_right_pane(self, target, show_midi_parse=show_midi_parse, show_events=show_events, show_logs=show_logs)
         except Exception:
             pass
 
@@ -698,6 +703,24 @@ class MeowFieldAutoPiano:
                 messagebox.showerror("错误", f"解析失败: {res.get('error')}")
                 return
             notes = res.get('notes', [])
+            # 若用户已在主界面选择了分部，则优先用所选分部的事件集合作为后续分析输入
+            try:
+                if isinstance(getattr(self, '_selected_part_names', None), set) and self._selected_part_names and isinstance(getattr(self, '_last_split_parts', None), dict):
+                    merged: list[dict] = []
+                    for name in self._selected_part_names:
+                        sec = self._last_split_parts.get(name)
+                        if sec and isinstance(sec, dict):
+                            evs = sec.get('notes') or []
+                        else:
+                            # dataclass PartSection 也可能以对象形式存储
+                            evs = getattr(sec, 'notes', []) if sec is not None else []
+                        if isinstance(evs, list):
+                            merged.extend([e for e in evs if isinstance(e, dict)])
+                    if merged:
+                        self._log_message(f"使用所选分部进行分析: {', '.join(sorted(self._selected_part_names))} | 事件数: {len(merged)}")
+                        notes = merged
+            except Exception:
+                pass
             # 预处理：整曲移调（优先自动选择白键占比最高的移调）
             if bool(getattr(self, 'enable_preproc_var', tk.BooleanVar(value=False)).get()) and notes:
                 try:
@@ -1015,11 +1038,12 @@ class MeowFieldAutoPiano:
             
             # 自动添加到播放列表
             self._add_file_to_playlist(file_path, "MIDI文件")
-            # 自动解析MIDI
+            # 新工作流：先识别分部，填充左侧分部列表，用户选择后再解析
             try:
-                self._analyze_current_midi()
+                self._ui_select_partitions()
+                self.ui_manager.set_status("已识别分部，请在左侧选择分部后点击‘应用所选分部并解析’")
             except Exception as e:
-                self._log_message(f"自动解析MIDI失败: {e}", "ERROR")
+                self._log_message(f"分部识别失败: {e}", "ERROR")
     
     def _convert_mp3_to_midi(self):
         """转换音频到MIDI"""
@@ -1150,11 +1174,290 @@ class MeowFieldAutoPiano:
         except Exception as e:
             self._log_message(f"应用回放设置失败: {str(e)}", "ERROR")
 
+    # ===================== 分部/分轨 选择与控制 =====================
+    def _ui_select_partitions(self):
+        """识别当前 MIDI 的分部并在左侧“分部识别与选择”树表中展示；不弹出小窗。"""
+        try:
+            midi_path = getattr(self, 'midi_path_var', None).get() if hasattr(self, 'midi_path_var') else ''
+            if not midi_path or not os.path.exists(midi_path):
+                messagebox.showerror("错误", "请先在上方选择有效的MIDI文件")
+                return
+            if not getattr(self, 'playback_controller', None):
+                self.playback_controller = PlaybackController(self, getattr(self, 'playback_service', None))
+            # 构建事件
+            events = self.playback_controller._build_note_events_with_track(midi_path)
+            # 乐器分部优先
+            parts = CombinedInstrumentPartitioner().split(events)
+            # 回退：若无识别结果，则按轨/通道分离
+            if not parts:
+                parts = TrackChannelPartitioner(include_meta=True).split(events)
+            if not parts:
+                messagebox.showwarning("提示", "未能识别到可用分部")
+                return
+            self._last_split_parts = parts
+            # 填充左侧 Treeview
+            self._populate_parts_tree(parts)
+            # 默认策略：若识别出与当前乐器相关的分部则预选，否则全选
+            try:
+                related = []
+                cur_inst = getattr(self, 'current_instrument', '')
+                for name in parts.keys():
+                    if ('鼓' in cur_inst and 'drums' in name) or ('贝斯' in cur_inst and 'bass' in name) or ('吉他' in cur_inst and 'guitar' in name) or ('琴' in cur_inst and ('keys' in name or 'piano' in name)):
+                        related.append(name)
+                if related:
+                    self._selected_part_names = set(related)
+                    # 选中这些节点
+                    if hasattr(self, '_parts_tree'):
+                        for iid in self._parts_tree.get_children():
+                            vals = self._parts_tree.item(iid, 'values')
+                            if vals and vals[0] in self._selected_part_names:
+                                self._parts_tree.selection_add(iid)
+                else:
+                    # 默认全选
+                    self._ui_parts_select_all()
+            except Exception:
+                self._ui_parts_select_all()
+            self._log_message("分部识别完成：请在左侧勾选需要的分部，然后点击‘应用所选分部并解析’。")
+        except Exception as e:
+            self._log_message(f"分部识别失败: {e}", "ERROR")
+
+    def _populate_parts_tree(self, parts: dict):
+        """将分部结果填充到左侧 Treeview（_parts_tree）。首列为勾选框字符。"""
+        try:
+            tree = getattr(self, '_parts_tree', None)
+            if tree is None:
+                return
+            # 勾选字典：若不存在则创建
+            if not hasattr(self, '_parts_checked') or not isinstance(getattr(self, '_parts_checked'), dict):
+                self._parts_checked = {}
+            # 清空
+            for iid in tree.get_children():
+                tree.delete(iid)
+            # 填充
+            for name, sec in parts.items():
+                if isinstance(sec, dict):
+                    cnt = int(sec.get('meta', {}).get('count', len(sec.get('notes') or [])))
+                    desc = str(sec.get('meta', {}).get('hint', ''))
+                else:
+                    try:
+                        meta = getattr(sec, 'meta', {}) or {}
+                        cnt = int(meta.get('count', len(getattr(sec, 'notes', []) or [])))
+                        desc = str(meta.get('hint', ''))
+                    except Exception:
+                        cnt = len(getattr(sec, 'notes', []) or [])
+                        desc = ''
+                # 默认选中：若已有状态则沿用，否则默认 True
+                checked = bool(self._parts_checked.get(name, True))
+                self._parts_checked[name] = checked
+                mark = '☑' if checked else '☐'
+                # 注意列顺序需与 UI 定义一致（选择, 分部, 计数, 说明）
+                tree.insert('', tk.END, values=(mark, name, cnt, desc))
+        except Exception as e:
+            self._log_message(f"填充分部列表失败: {e}", "ERROR")
+
+    def _get_parts_checked_names(self) -> list[str]:
+        names: list[str] = []
+        try:
+            checked = getattr(self, '_parts_checked', {}) or {}
+            # 返回勾选为 True 的分部名
+            for name, ok in checked.items():
+                if ok:
+                    names.append(name)
+        except Exception:
+            pass
+        return names
+
+    def _ui_parts_select_all(self):
+        try:
+            tree = getattr(self, '_parts_tree', None)
+            if tree is None:
+                return
+            # 勾选全部
+            self._parts_checked = {}
+            for iid in tree.get_children():
+                vals = list(tree.item(iid, 'values'))
+                if not vals or len(vals) < 2:
+                    continue
+                name = vals[1]
+                self._parts_checked[name] = True
+                vals[0] = '☑'
+                tree.item(iid, values=vals)
+        except Exception:
+            pass
+
+    def _ui_parts_select_none(self):
+        try:
+            tree = getattr(self, '_parts_tree', None)
+            if tree is None:
+                return
+            # 全部取消
+            self._parts_checked = {}
+            for iid in tree.get_children():
+                vals = list(tree.item(iid, 'values'))
+                if not vals or len(vals) < 2:
+                    continue
+                name = vals[1]
+                self._parts_checked[name] = False
+                vals[0] = '☐'
+                tree.item(iid, values=vals)
+        except Exception:
+            pass
+
+    def _ui_parts_select_invert(self):
+        try:
+            tree = getattr(self, '_parts_tree', None)
+            if tree is None:
+                return
+            # 逐行取反
+            if not hasattr(self, '_parts_checked'):
+                self._parts_checked = {}
+            for iid in tree.get_children():
+                vals = list(tree.item(iid, 'values'))
+                if not vals or len(vals) < 2:
+                    continue
+                name = vals[1]
+                cur = bool(self._parts_checked.get(name, False))
+                self._parts_checked[name] = not cur
+                vals[0] = '☑' if not cur else '☐'
+                tree.item(iid, values=vals)
+        except Exception:
+            pass
+
+    def _ui_apply_selected_parts_and_analyze(self):
+        """将 Treeview 中所选分部写入集合并进入解析流程。"""
+        try:
+            sels = self._get_parts_checked_names()
+            if not sels:
+                messagebox.showwarning("提示", "未选择任何分部")
+                return
+            self._selected_part_names = set(sels)
+            self._log_message(f"分部已选择: {', '.join(sels)}，开始解析...")
+            self._analyze_current_midi()
+        except Exception as e:
+            self._log_message(f"应用所选分部并解析失败: {e}", "ERROR")
+
+    def _open_part_selection_dialog(self, part_names):
+        """弹出多选窗口供用户选择分部。"""
+        try:
+            win = tk.Toplevel(self.root)
+            win.title("选择要播放/导出的分部")
+            win.geometry("420x360")
+            ttk.Label(win, text="可用分部（可多选）:").pack(side=tk.TOP, anchor=tk.W, padx=10, pady=(10, 6))
+            lb = tk.Listbox(win, selectmode=tk.MULTIPLE)
+            lb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+            for n in part_names:
+                lb.insert(tk.END, n)
+
+            # 预选之前选过的
+            try:
+                previously = [n for n in part_names if n in getattr(self, '_selected_part_names', set())]
+                for i, n in enumerate(part_names):
+                    if n in previously:
+                        lb.selection_set(i)
+            except Exception:
+                pass
+
+            btn_row = ttk.Frame(win)
+            btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+
+            def on_ok():
+                try:
+                    sels = [part_names[i] for i in lb.curselection()]
+                    if not sels:
+                        messagebox.showwarning("提示", "未选择任何分部")
+                        return
+                    self._selected_part_names = set(sels)
+                    self._log_message(f"分部已选择: {', '.join(sels)}")
+                    win.destroy()
+                except Exception:
+                    win.destroy()
+
+            def on_all():
+                lb.select_set(0, tk.END)
+
+            ttk.Button(btn_row, text="全选", command=on_all).pack(side=tk.LEFT)
+            ttk.Button(btn_row, text="确定", command=on_ok).pack(side=tk.RIGHT)
+            ttk.Button(btn_row, text="取消", command=win.destroy).pack(side=tk.RIGHT, padx=(8, 0))
+            win.transient(self.root)
+            win.grab_set()
+            self.root.wait_window(win)
+        except Exception as e:
+            self._log_message(f"打开分部选择窗口失败: {e}", "ERROR")
+
+    def _ui_play_selected_partitions(self):
+        """使用控制器播放已选择的分部（若未选择则尝试先识别并选择）。"""
+        try:
+            if not getattr(self, '_last_split_parts', None):
+                self._ui_select_partitions()
+            parts = getattr(self, '_last_split_parts', {})
+            if not parts:
+                messagebox.showwarning("提示", "没有可用分部可播放")
+                return
+            # 优先读取 Treeview 勾选
+            selected = self._get_parts_checked_names()
+            if not selected:
+                selected = list(getattr(self, '_selected_part_names', set()) or [])
+            if not selected:
+                # 默认全选
+                selected = list(parts.keys())
+            if not getattr(self, 'playback_controller', None):
+                self.playback_controller = PlaybackController(self, getattr(self, 'playback_service', None))
+            mode = None
+            my_role = None
+            try:
+                mode = getattr(self, 'ensemble_mode_var', tk.StringVar(value='ensemble')).get()
+            except Exception:
+                mode = None
+            ok = bool(self.playback_controller.play_selected_parts(
+                parts, selected,
+                tempo=float(getattr(self, 'tempo_scale_var', tk.DoubleVar(value=1.0)).get()),
+                on_progress=getattr(self, '_on_play_progress', None),
+                mode=mode,
+                my_role=my_role,
+            ))
+            if ok:
+                self._log_message(f"正在播放分部: {', '.join(selected)}")
+                self.ui_manager.set_status("正在播放所选分部")
+            else:
+                messagebox.showerror("错误", "分部播放失败")
+        except Exception as e:
+            self._log_message(f"分部播放异常: {e}", "ERROR")
+
+    def _ui_export_selected_partitions(self):
+        """将所选分部分别导出为多个 MIDI 文件。"""
+        try:
+            if not getattr(self, '_last_split_parts', None):
+                self._ui_select_partitions()
+            parts = getattr(self, '_last_split_parts', {})
+            if not parts:
+                messagebox.showwarning("提示", "没有可用分部可导出")
+                return
+            # 优先读取 Treeview 勾选
+            selected = self._get_parts_checked_names()
+            if not selected:
+                selected = list(getattr(self, '_selected_part_names', set()) or [])
+            if selected:
+                # 仅保留所选
+                parts = {k: v for k, v in parts.items() if k in set(selected)}
+            out_dir = filedialog.askdirectory(title="选择导出文件夹")
+            if not out_dir:
+                return
+            if not getattr(self, 'playback_controller', None):
+                self.playback_controller = PlaybackController(self, getattr(self, 'playback_service', None))
+            written = self.playback_controller.export_partitions_to_midis(parts, out_dir, tempo_bpm=120)
+            if written:
+                messagebox.showinfo("导出完成", f"已导出 {len(written)} 个文件到:\n{out_dir}")
+            else:
+                messagebox.showwarning("提示", "没有写出任何文件")
+        except Exception as e:
+            self._log_message(f"导出分部异常: {e}", "ERROR")
+
     # ===================== 播放列表控制器方法 =====================
     def _add_to_playlist(self):
         try:
             filetypes = [
                 ("支持的文件", ".mid .midi .lrcp .mp3 .wav .flac .m4a .aac .ogg"),
+{{ ... }}
                 ("MIDI", ".mid .midi"),
                 ("谱面 LRCp", ".lrcp"),
                 ("音频", ".mp3 .wav .flac .m4a .aac .ogg"),

@@ -86,29 +86,50 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         "• Ctrl+T: 切换主题\n"
         "• Ctrl+D: 切换控件密度\n\n"
         "使用说明:\n"
-        "1. 选择音频文件 → 点击\"音频转MIDI\"\n"
-        "2. 选择MIDI文件 → 点击\"解析当前MIDI\"\n"
-        "3. 设置演奏模式和参数（回放模式、倒计时、和弦伴奏等）\n"
-        "4. 点击\"自动弹琴\"开始演奏；或在播放列表选中后使用\"播放所选/上一首/下一首\"\n"
+        "1. 选择MIDI文件 → 点击\"解析当前MIDI\"\n"
+        "2. 在分部/分轨区域选择所需分部，或直接播放MIDI\n"
+        "3. 通过播放列表管理并播放多个MIDI\n"
+        "提示：音频转MIDI已迁移至侧边栏“工具 → 音频转MIDI”。\n"
     )
     ttk.Label(help_inner, text=help_text, justify=tk.LEFT, wraplength=520).pack(anchor=tk.W)
     notebook.add(tab_help, text="帮助")
 
+    # 为“控制”页创建可滚动容器
+    canvas = tk.Canvas(tab_controls, highlightthickness=0)
+    vscroll = ttk.Scrollbar(tab_controls, orient=tk.VERTICAL, command=canvas.yview)
+    canvas.configure(yscrollcommand=vscroll.set)
+    vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    ctrl_inner = ttk.Frame(canvas)
+    canvas.create_window((0, 0), window=ctrl_inner, anchor='nw')
+    def _on_ctrl_inner_config(event):
+        try:
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        except Exception:
+            pass
+    ctrl_inner.bind('<Configure>', _on_ctrl_inner_config)
+    def _on_ctrl_mousewheel(event):
+        try:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+        except Exception:
+            pass
+    ctrl_inner.bind_all('<MouseWheel>', _on_ctrl_mousewheel)
+
     # 控制页（简化，委托 controller 原有回调）
-    mode_frame = ttk.Frame(tab_controls)
+    mode_frame = ttk.Frame(ctrl_inner)
     mode_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(8, 6))
     ttk.Label(mode_frame, text="演奏模式:").pack(side=tk.LEFT, padx=(0, 12))
     controller.playback_mode = tk.StringVar(value="midi")
     ttk.Radiobutton(mode_frame, text="MIDI模式", variable=controller.playback_mode, value="midi", command=controller._on_mode_changed).pack(side=tk.LEFT, padx=(0, 12))
 
     # 速度（保留倍速控件，删除音量）
-    av_frame = ttk.LabelFrame(tab_controls, text="速度设置", padding="8")
+    av_frame = ttk.LabelFrame(ctrl_inner, text="速度设置", padding="8")
     av_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
     ttk.Label(av_frame, text="倍速:").pack(side=tk.LEFT)
     controller.tempo_var = tk.DoubleVar(value=1.0)
     ttk.Spinbox(av_frame, from_=0.25, to=3.0, increment=0.05, textvariable=controller.tempo_var, width=6).pack(side=tk.LEFT, padx=(6, 12))
 
-    button_frame = ttk.LabelFrame(tab_controls, text="操作", padding="8")
+    button_frame = ttk.LabelFrame(ctrl_inner, text="操作", padding="8")
     button_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
     controller._create_auto_play_controls(button_frame)
     btn_row = ttk.Frame(button_frame)
@@ -122,9 +143,77 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     hint = ttk.Label(button_frame, text="快捷键: 空格=暂停/恢复, ESC=停止, Ctrl+S=停止自动演奏", foreground="#666")
     hint.pack(side=tk.TOP, anchor=tk.W, pady=(6,0))
 
+    # 分部识别与选择（内嵌，不使用弹窗）
+    part_frame = ttk.LabelFrame(ctrl_inner, text="分部识别与选择", padding="8")
+    part_frame.pack(side=tk.TOP, fill=tk.BOTH, padx=10, pady=(0, 10))
+
+    # 工具栏：识别 + 批量选择
+    part_toolbar = ttk.Frame(part_frame)
+    part_toolbar.pack(side=tk.TOP, fill=tk.X)
+    ttk.Button(part_toolbar, text="识别分部", command=getattr(controller, '_ui_select_partitions', lambda: None)).pack(side=tk.LEFT)
+    ttk.Button(part_toolbar, text="全选", command=getattr(controller, '_ui_parts_select_all', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
+    ttk.Button(part_toolbar, text="全不选", command=getattr(controller, '_ui_parts_select_none', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
+    ttk.Button(part_toolbar, text="反选", command=getattr(controller, '_ui_parts_select_invert', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
+
+    # Treeview：展示分部
+    part_body = ttk.Frame(part_frame)
+    part_body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(6, 6))
+    # 勾选列 + 数据列
+    columns = ("选择", "分部", "计数", "说明")
+    parts_tree = ttk.Treeview(part_body, columns=columns, show='headings', selectmode='none', height=8)
+    heads = ["选择", "分部", "计数", "说明"]
+    widths = [60, 240, 80, 300]
+    for i, col in enumerate(columns):
+        parts_tree.heading(col, text=heads[i])
+        if i == 0:
+            parts_tree.column(col, width=widths[i], anchor=tk.CENTER)
+        elif i == 2:
+            parts_tree.column(col, width=widths[i], anchor=tk.CENTER)
+        else:
+            parts_tree.column(col, width=widths[i], anchor=tk.W)
+    vbar2 = ttk.Scrollbar(part_body, orient=tk.VERTICAL, command=parts_tree.yview)
+    parts_tree.configure(yscrollcommand=vbar2.set)
+    parts_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    vbar2.pack(side=tk.RIGHT, fill=tk.Y)
+    # 对外暴露句柄
+    controller._parts_tree = parts_tree
+    # 勾选状态存储：name -> bool
+    controller._parts_checked = {}
+
+    def _on_parts_tree_click(event=None):
+        try:
+            region = parts_tree.identify('region', event.x, event.y)
+            if region != 'cell':
+                return
+            col = parts_tree.identify_column(event.x)
+            if col != '#1':  # 仅在“选择”列点按时切换
+                return
+            row = parts_tree.identify_row(event.y)
+            if not row:
+                return
+            vals = list(parts_tree.item(row, 'values'))
+            if not vals or len(vals) < 2:
+                return
+            name = vals[1]
+            checked = bool(controller._parts_checked.get(name, False))
+            checked = not checked
+            controller._parts_checked[name] = checked
+            vals[0] = '☑' if checked else '☐'
+            parts_tree.item(row, values=vals)
+        except Exception:
+            pass
+    parts_tree.bind('<Button-1>', _on_parts_tree_click)
+
+    # 操作行：应用所选并解析 / 播放 / 导出
+    act_row = ttk.Frame(part_frame)
+    act_row.pack(side=tk.TOP, anchor=tk.W)
+    ttk.Button(act_row, text="应用所选分部并解析", command=getattr(controller, '_ui_apply_selected_parts_and_analyze', lambda: None)).pack(side=tk.LEFT)
+    ttk.Button(act_row, text="播放所选分部", command=getattr(controller, '_ui_play_selected_partitions', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
+    ttk.Button(act_row, text="导出所选分部", command=getattr(controller, '_ui_export_selected_partitions', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
+
     # 合奏相关（可选）
     if include_ensemble:
-        ensemble_frame = ttk.Frame(tab_controls)
+        ensemble_frame = ttk.Frame(ctrl_inner)
         ensemble_frame.pack(side=tk.TOP, anchor=tk.W, pady=(6, 0))
         controller._ensemble_label = ttk.Label(ensemble_frame, text="合奏模式:")
         controller._ensemble_label.pack(side=tk.LEFT)

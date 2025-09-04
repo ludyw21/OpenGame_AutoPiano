@@ -124,9 +124,12 @@ class StrategyBass:
 
 class DefaultPartitioner:
     """默认分部器：按策略组合输出占位分部。"""
-    def __init__(self, *, use_drums: bool = True, use_bass: bool = True):
+    def __init__(self, *, use_drums: bool = True, use_bass: bool = True, use_guitar: bool = False, use_keys: bool = False):
         self.drums = StrategyDrums() if use_drums else None
         self.bass = StrategyBass() if use_bass else None
+        # 可选：吉他与键盘识别（默认关闭，避免与历史行为产生多余分部）
+        self.guitar = StrategyGuitar() if use_guitar else None
+        self.keys = StrategyKeys() if use_keys else None
 
     def split(self, events: List[Dict[str, Any]] | Any, *, tempo: float = 1.0) -> Dict[str, PartSection]:
         parts: Dict[str, PartSection] = {}
@@ -134,6 +137,14 @@ class DefaultPartitioner:
             parts["drums"] = self.drums.extract(events)
         if self.bass:
             parts["bass"] = self.bass.extract(events)
+        if self.guitar:
+            g = self.guitar.extract(events)
+            if g.notes:
+                parts["guitar"] = g
+        if self.keys:
+            k = self.keys.extract(events)
+            if k.notes:
+                parts["keys"] = k
         # TODO: 未来可加入 lead/chords 等更多角色
         return parts
 
@@ -195,6 +206,111 @@ class TrackChannelPartitioner:
         return parts
 
 
+# —— 新增：乐器识别策略 ——
+class StrategyGuitar:
+    """吉他分部策略。
+    依据：
+    - GM Program 24..31（0-based）：Guitars
+    - 名称包含 guitar
+    - pitch 典型分布（E2≈40 到 B5≈83），并排除 channel 10（打击乐）
+    """
+    def extract(self, events: List[Dict[str, Any]] | Any) -> PartSection:
+        if not isinstance(events, list):
+            return PartSection(name="guitar", notes=[], meta={"strategy": "guitar", "status": "invalid_input"})
+        out: List[Dict[str, Any]] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") not in ("note_on", "note_off"):
+                continue
+            ch = ev.get("channel")
+            prog = ev.get("program")
+            name = str(ev.get("instrument_name", "")).lower()
+            pitch = ev.get("note")
+            if ch == 9:
+                continue
+            cond_prog = isinstance(prog, int) and 24 <= prog <= 31
+            cond_name = "guitar" in name
+            cond_pitch = isinstance(pitch, int) and 40 <= pitch <= 83
+            if cond_prog or cond_name or cond_pitch:
+                out.append(ev)
+        return PartSection(
+            name="guitar",
+            notes=out,
+            meta={
+                "strategy": "guitar",
+                "count": len(out),
+                "hint": "program24-31/name_contains/pitch_40_83",
+            },
+        )
+
+
+class StrategyKeys:
+    """键盘/电子琴分部策略。
+    依据：
+    - GM Program 0..7（Acoustic Pianos）、4..5（Electric Piano1/2），以及 6..7（Harpsichord/Clav）
+    - 名称包含 piano/epiano/keyboard/keys
+    - pitch 分布宽（A0≈21 到 C7≈96），排除 channel 10
+    说明：键盘类泛化，既涵盖钢琴也涵盖电子琴，后续可按需拆分。
+    """
+    def extract(self, events: List[Dict[str, Any]] | Any) -> PartSection:
+        if not isinstance(events, list):
+            return PartSection(name="keys", notes=[], meta={"strategy": "keys", "status": "invalid_input"})
+        out: List[Dict[str, Any]] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") not in ("note_on", "note_off"):
+                continue
+            ch = ev.get("channel")
+            prog = ev.get("program")
+            name = str(ev.get("instrument_name", "")).lower()
+            pitch = ev.get("note")
+            if ch == 9:
+                continue
+            cond_prog = isinstance(prog, int) and (0 <= prog <= 7)
+            cond_name = ("piano" in name) or ("epiano" in name) or ("keyboard" in name) or ("keys" in name)
+            cond_pitch = isinstance(pitch, int) and 21 <= pitch <= 96
+            if cond_prog or cond_name or cond_pitch:
+                out.append(ev)
+        return PartSection(
+            name="keys",
+            notes=out,
+            meta={
+                "strategy": "keys",
+                "count": len(out),
+                "hint": "program0-7/name_contains/pitch_21_96",
+            },
+        )
+
+
+class CombinedInstrumentPartitioner:
+    """组合乐器识别分部器：输出 drums/bass/guitar/keys 等可用分部。"""
+    def __init__(self, *, include_drums: bool = True, include_bass: bool = True, include_guitar: bool = True, include_keys: bool = True):
+        self._drums = StrategyDrums() if include_drums else None
+        self._bass = StrategyBass() if include_bass else None
+        self._guitar = StrategyGuitar() if include_guitar else None
+        self._keys = StrategyKeys() if include_keys else None
+
+    def split(self, events: List[Dict[str, Any]] | Any, *, tempo: float = 1.0) -> Dict[str, PartSection]:
+        parts: Dict[str, PartSection] = {}
+        if self._drums:
+            d = self._drums.extract(events)
+            if d.notes:
+                parts["drums"] = d
+        if self._bass:
+            b = self._bass.extract(events)
+            if b.notes:
+                parts["bass"] = b
+        if self._guitar:
+            g = self._guitar.extract(events)
+            if g.notes:
+                parts["guitar"] = g
+        if self._keys:
+            k = self._keys.extract(events)
+            if k.notes:
+                parts["keys"] = k
+        return parts
 __all__ = [
     "PartSection",
     "Partitioner",
@@ -202,4 +318,7 @@ __all__ = [
     "StrategyBass",
     "DefaultPartitioner",
     "TrackChannelPartitioner",
+    "StrategyGuitar",
+    "StrategyKeys",
+    "CombinedInstrumentPartitioner",
 ]
