@@ -24,9 +24,16 @@ if %errorLevel% == 0 (
     exit /b 1
 )
 
+:: 选择Python命令（优先 py -3，回退 python）
+set "PY_CMD="
+where py >nul 2>&1 && (set "PY_CMD=py -3")
+if not defined PY_CMD (
+    where python >nul 2>&1 && (set "PY_CMD=python")
+)
+
 :: 检查Python是否安装
 echo 正在检查Python环境...
-python --version >nul 2>&1
+%PY_CMD% --version >nul 2>&1
 if %errorLevel% neq 0 (
     echo ❌ Python未安装或未添加到PATH
     echo 请先安装Python 3.8+
@@ -34,77 +41,48 @@ if %errorLevel% neq 0 (
     exit /b 1
 )
 
-for /f "tokens=*" %%i in ('python --version 2^>^&1') do set PYTHON_VERSION=%%i
+for /f "tokens=*" %%i in ('%PY_CMD% --version 2^>^&1') do set PYTHON_VERSION=%%i
 echo ✓ Python环境检查通过: %PYTHON_VERSION%
 
 :: 检查Python版本
-python -c "import sys; exit(0 if sys.version_info >= (3, 8) else 1)" >nul 2>&1
+%PY_CMD% -c "import sys; exit(0 if sys.version_info >= (3, 8) else 1)" >nul 2>&1
 if %errorLevel% neq 0 (
     echo ❌ Python版本过低，需要3.8+
     pause
     exit /b 1
 )
 
-:: 检查依赖包
+:: 依赖安装：优先使用 requirements.txt；否则逐项检查必要依赖
 echo.
-echo 正在检查依赖包...
-echo 检查 tkinter...
-python -c "import tkinter; print('tkinter OK')" >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ❌ tkinter 不可用
-    pause
-    exit /b 1
-)
-
-echo 检查 PIL...
-python -c "import PIL; print('PIL OK')" >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ⚠ PIL 缺失，正在安装...
-    pip install pillow
+echo 正在检查/安装依赖包...
+if exist requirements.txt (
+    echo 检测到 requirements.txt，执行一键安装...
+    %PY_CMD% -m pip install -r requirements.txt
     if %errorLevel% neq 0 (
-        echo ❌ PIL 安装失败
+        echo ❌ 依赖安装失败，请检查网络或权限
         pause
         exit /b 1
     )
-)
-
-echo 检查 mido...
-python -c "import mido; print('mido OK')" >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ⚠ mido 缺失，正在安装...
-    pip install mido
-    if %errorLevel% neq 0 (
-        echo ❌ mido 安装失败
-        pause
-        exit /b 1
+) else (
+    echo 未找到 requirements.txt，逐项检查必要依赖...
+    rem tkinter 为内置，直接检测
+    %PY_CMD% -c "import tkinter; print('tkinter OK')" >nul 2>&1 || (
+        echo ❌ tkinter 不可用，请安装带有 tkinter 的 Python 版本
+        pause & exit /b 1
     )
+    rem ttkbootstrap（可选）
+    %PY_CMD% -c "import ttkbootstrap" >nul 2>&1 || %PY_CMD% -m pip install ttkbootstrap>=1.10.1
+    rem mido（必须）
+    %PY_CMD% -c "import mido" >nul 2>&1 || %PY_CMD% -m pip install mido>=1.3.0
+    if %errorLevel% neq 0 ( echo ❌ mido 安装失败 & pause & exit /b 1 )
+    rem pygame（必须）
+    %PY_CMD% -c "import pygame" >nul 2>&1 || %PY_CMD% -m pip install pygame>=2.5.2
+    if %errorLevel% neq 0 ( echo ❌ pygame 安装失败 & pause & exit /b 1 )
+    rem keyboard（必须）
+    %PY_CMD% -c "import keyboard" >nul 2>&1 || %PY_CMD% -m pip install keyboard>=0.13.5
+    if %errorLevel% neq 0 ( echo ❌ keyboard 安装失败 & pause & exit /b 1 )
 )
-
-echo 检查 pygame...
-python -c "import pygame; print('pygame OK')" >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ⚠ pygame 缺失，正在安装...
-    pip install pygame
-    if %errorLevel% neq 0 (
-        echo ❌ pygame 安装失败
-        pause
-        exit /b 1
-    )
-)
-
-echo 检查 numpy...
-python -c "import numpy; print('numpy OK')" >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ⚠ numpy 缺失，正在安装...
-    pip install numpy
-    if %errorLevel% neq 0 (
-        echo ❌ numpy 安装失败
-        pause
-        exit /b 1
-    )
-)
-
-echo ✓ 所有依赖包检查完成
+echo ✓ 依赖检查完成
 
 :: 创建必要目录
 echo.
@@ -139,7 +117,7 @@ echo.
 
 :: 首先尝试运行 start.py
 echo 尝试运行 start.py...
-python start.py
+%PY_CMD% start.py
 if %errorLevel% == 0 (
     echo ✓ start.py 运行成功
     goto :end
@@ -147,7 +125,7 @@ if %errorLevel% == 0 (
 
 :: 如果 start.py 失败，尝试运行 main.py
 echo start.py 运行失败，尝试运行 main.py...
-python main.py
+%PY_CMD% main.py
 if %errorLevel% == 0 (
     echo ✓ main.py 运行成功
     goto :end
@@ -155,7 +133,7 @@ if %errorLevel% == 0 (
 
 :: 如果都失败了，尝试直接运行 app.py
 echo main.py 运行失败，尝试直接运行 app.py...
-python -c "
+%PY_CMD% -c "
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath('app.py')))

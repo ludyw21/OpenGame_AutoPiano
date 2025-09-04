@@ -162,7 +162,7 @@ class ConfigManager:
         # MIDI音符编号: C0=12, C1=24, C2=36, C3=48, C4=60, C5=72, C6=84, C7=96, C8=108
         self.note_mapping = {}
         
-        # 低音八度 (C2-B2, 音符编号36-47)
+        # 低音八度 (C2-B3, 音符编号36-59)
         low_notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         for i, note in enumerate(low_notes):
             midi_note = 36 + i
@@ -173,30 +173,29 @@ class ConfigManager:
             elif note in ['G', 'G#']: self.note_mapping[midi_note] = 'L5'  # G2, G#2 -> L5
             elif note in ['A', 'A#']: self.note_mapping[midi_note] = 'L6'  # A2, A#2 -> L6
             elif note == 'B': self.note_mapping[midi_note] = 'L7'  # B2 -> L7
-        
-        # 中音八度 (C3-B3, 音符编号48-59)
+        # 扩展低音到下一八度 (C3-B3, 音符编号48-59)
         for i, note in enumerate(low_notes):
             midi_note = 48 + i
-            if note in ['C', 'C#']: self.note_mapping[midi_note] = 'M1'  # C3, C#3 -> M1
-            elif note in ['D', 'D#']: self.note_mapping[midi_note] = 'M2'  # D3, D#3 -> M2
-            elif note == 'E': self.note_mapping[midi_note] = 'M3'  # E3 -> M3
-            elif note in ['F', 'F#']: self.note_mapping[midi_note] = 'M4'  # F3, F#3 -> M4
-            elif note in ['G', 'G#']: self.note_mapping[midi_note] = 'M5'  # G3, G#3 -> M5
-            elif note in ['A', 'A#']: self.note_mapping[midi_note] = 'M6'  # A3, A#3 -> M6
-            elif note == 'B': self.note_mapping[midi_note] = 'M7'  # B3 -> M7
-        
-        # 高音八度 (C4-B4, 音符编号60-71)
+            if note in ['C', 'C#']: self.note_mapping[midi_note] = 'L1'  # C3, C#3 -> L1
+            elif note in ['D', 'D#']: self.note_mapping[midi_note] = 'L2'  # D3, D#3 -> L2
+            elif note == 'E': self.note_mapping[midi_note] = 'L3'  # E3 -> L3
+            elif note in ['F', 'F#']: self.note_mapping[midi_note] = 'L4'  # F3, F#3 -> L4
+            elif note in ['G', 'G#']: self.note_mapping[midi_note] = 'L5'  # G3, G#3 -> L5
+            elif note in ['A', 'A#']: self.note_mapping[midi_note] = 'L6'  # A3, A#3 -> L6
+            elif note == 'B': self.note_mapping[midi_note] = 'L7'  # B3 -> L7
+
+        # 中音八度 (C4-B4, 音符编号60-71)
         for i, note in enumerate(low_notes):
             midi_note = 60 + i
-            if note in ['C', 'C#']: self.note_mapping[midi_note] = 'H1'  # C4, C#4 -> H1
-            elif note in ['D', 'D#']: self.note_mapping[midi_note] = 'H2'  # D4, D#4 -> H2
-            elif note == 'E': self.note_mapping[midi_note] = 'H3'  # E4 -> H3
-            elif note in ['F', 'F#']: self.note_mapping[midi_note] = 'H4'  # F4, F#4 -> H4
-            elif note in ['G', 'G#']: self.note_mapping[midi_note] = 'H5'  # G4, G#4 -> H5
-            elif note in ['A', 'A#']: self.note_mapping[midi_note] = 'H6'  # A4, A#4 -> H6
-            elif note == 'B': self.note_mapping[midi_note] = 'H7'  # B4 -> H7
-        
-        # 更高八度 (C5-B5, 音符编号72-83) - 映射到高音
+            if note in ['C', 'C#']: self.note_mapping[midi_note] = 'M1'  # C4, C#4 -> M1
+            elif note in ['D', 'D#']: self.note_mapping[midi_note] = 'M2'  # D4, D#4 -> M2
+            elif note == 'E': self.note_mapping[midi_note] = 'M3'  # E4 -> M3
+            elif note in ['F', 'F#']: self.note_mapping[midi_note] = 'M4'  # F4, F#4 -> M4
+            elif note in ['G', 'G#']: self.note_mapping[midi_note] = 'M5'  # G4, G#4 -> M5
+            elif note in ['A', 'A#']: self.note_mapping[midi_note] = 'M6'  # A4, A#4 -> M6
+            elif note == 'B': self.note_mapping[midi_note] = 'M7'  # B4 -> M7
+
+        # 高音八度 (C5-B5, 音符编号72-83)
         for i, note in enumerate(low_notes):
             midi_note = 72 + i
             if note in ['C', 'C#']: self.note_mapping[midi_note] = 'H1'  # C5, C#5 -> H1
