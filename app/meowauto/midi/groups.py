@@ -4,17 +4,18 @@ Groups are defined in MIDI note numbers.
 """
 from typing import Dict, Tuple, List
 
-# MIDI note numbers: A0=21, C4=60, C8=108
-# We define groups to cover the full 88-key range (21..108)
+# MIDI note numbers: A₂=21, c¹=60 (中央C), c⁵=108
+# 按照标准钢琴音域定义音组 (21..108)
 GROUPS: Dict[str, Tuple[int, int]] = {
-    "大字二组 (A0-B0)": (21, 23),
-    "大字组 (C1-B1)": (24, 35),
-    "小字组 (C2-B2)": (36, 47),
-    "小字一组 (C3-B3)": (48, 59),
-    "小字二组 (C4-B4)": (60, 71),
-    "小字三组 (C5-B5)": (72, 83),
-    "小字四组 (C6-B6)": (84, 95),
-    "小字五组 (C7-C8)": (96, 108),
+    "大字二组 (A₂-B₂)": (21, 23),
+    "大字一组 (C₁-B₁)": (24, 35),
+    "大字组 (C-B)": (36, 47),
+    "小字组 (c-b)": (48, 59),
+    "小字一组 (c¹-b¹)": (60, 71),
+    "小字二组 (c²-b²)": (72, 83),
+    "小字三组 (c³-b³)": (84, 95),
+    "小字四组 (c⁴-b⁴)": (96, 107),
+    "小字五组 (c⁵)": (108, 108),
 }
 
 ORDERED_GROUP_NAMES: List[str] = list(GROUPS.keys())

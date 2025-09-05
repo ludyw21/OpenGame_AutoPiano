@@ -54,20 +54,85 @@ def create_right_pane(controller, parent_right, *, show_midi_parse: bool = True,
         grp_frame = ttk.LabelFrame(settings_inner, text="音高分组选择", padding="8")
         grp_frame.pack(fill=tk.X, padx=6, pady=6)
         controller.pitch_group_vars = {}
-        row = 0
-        col = 0
-        for name in groups.ORDERED_GROUP_NAMES:
+        
+        # 按低音区、中音区、高音区分组，并为每个音区添加全选功能
+        bass_section_frame = ttk.Frame(grp_frame)
+        bass_section_frame.grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
+        controller.bass_section_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bass_section_frame, variable=controller.bass_section_var).pack(side=tk.LEFT, padx=(0,2))
+        bass_section = ttk.Label(bass_section_frame, text="低音区", font=('微软雅黑', 8, 'bold'))
+        bass_section.pack(side=tk.LEFT)
+        
+        mid_section_frame = ttk.Frame(grp_frame)
+        mid_section_frame.grid(row=0, column=1, sticky=tk.W, padx=4, pady=2)
+        controller.mid_section_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(mid_section_frame, variable=controller.mid_section_var).pack(side=tk.LEFT, padx=(0,2))
+        mid_section = ttk.Label(mid_section_frame, text="中音区", font=('微软雅黑', 8, 'bold'))
+        mid_section.pack(side=tk.LEFT)
+        
+        treble_section_frame = ttk.Frame(grp_frame)
+        treble_section_frame.grid(row=0, column=2, sticky=tk.W, padx=4, pady=2)
+        controller.treble_section_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(treble_section_frame, variable=controller.treble_section_var).pack(side=tk.LEFT, padx=(0,2))
+        treble_section = ttk.Label(treble_section_frame, text="高音区", font=('微软雅黑', 8, 'bold'))
+        treble_section.pack(side=tk.LEFT)
+        
+        # 低音区: 大字二组、大字一组、大字组
+        bass_groups = [name for name in groups.ORDERED_GROUP_NAMES if '大字' in name]
+        for i, name in enumerate(bass_groups):
             var = tk.BooleanVar(value=True)
             controller.pitch_group_vars[name] = var
-            ttk.Checkbutton(grp_frame, text=name, variable=var).grid(row=row, column=col, sticky=tk.W, padx=4, pady=2)
-            col += 1
-            if col % 2 == 0:
-                row += 1
-                col = 0
+            ttk.Checkbutton(grp_frame, text=name, variable=var).grid(row=i+1, column=0, sticky=tk.W, padx=16, pady=2)  # 增加左内边距
+        
+        # 中音区: 小字组、小字一组、小字二组
+        mid_groups = [name for name in groups.ORDERED_GROUP_NAMES if '小字' in name and ('组' in name or '一组' in name or '二组' in name)]
+        mid_groups = [g for g in mid_groups if '三组' not in g and '四组' not in g and '五组' not in g]
+        for i, name in enumerate(mid_groups):
+            var = tk.BooleanVar(value=True)
+            controller.pitch_group_vars[name] = var
+            ttk.Checkbutton(grp_frame, text=name, variable=var).grid(row=i+1, column=1, sticky=tk.W, padx=16, pady=2)  # 增加左内边距
+        
+        # 高音区: 小字三组、小字四组、小字五组
+        treble_groups = [name for name in groups.ORDERED_GROUP_NAMES if '小字' in name and ('三组' in name or '四组' in name or '五组' in name)]
+        for i, name in enumerate(treble_groups):
+            var = tk.BooleanVar(value=True)
+            controller.pitch_group_vars[name] = var
+            ttk.Checkbutton(grp_frame, text=name, variable=var).grid(row=i+1, column=2, sticky=tk.W, padx=16, pady=2)  # 增加左内边距
+        
+        # 绑定音区全选复选框的事件处理
+        def select_bass_section():
+            for name in bass_groups:
+                controller.pitch_group_vars[name].set(controller.bass_section_var.get())
+        
+        def select_mid_section():
+            for name in mid_groups:
+                controller.pitch_group_vars[name].set(controller.mid_section_var.get())
+        
+        def select_treble_section():
+            for name in treble_groups:
+                controller.pitch_group_vars[name].set(controller.treble_section_var.get())
+        
+        controller.bass_section_var.trace_add('write', lambda *args: select_bass_section())
+        controller.mid_section_var.trace_add('write', lambda *args: select_mid_section())
+        controller.treble_section_var.trace_add('write', lambda *args: select_treble_section())
+        
+        # 全选/全不选按钮
         btns = ttk.Frame(grp_frame)
-        btns.grid(row=row+1, column=0, columnspan=2, sticky=tk.W)
-        ttk.Button(btns, text="全选", command=lambda: [v.set(True) for v in controller.pitch_group_vars.values()]).pack(side=tk.LEFT, padx=(0,6))
-        ttk.Button(btns, text="全不选", command=lambda: [v.set(False) for v in controller.pitch_group_vars.values()]).pack(side=tk.LEFT)
+        btns.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=6)
+        ttk.Button(btns, text="全选", command=lambda: [
+            v.set(True) for v in controller.pitch_group_vars.values()
+        ] + [
+            controller.bass_section_var.set(True),
+            controller.mid_section_var.set(True),
+            controller.treble_section_var.set(True)
+        ]).pack(side=tk.LEFT, padx=(0,6))
+        ttk.Button(btns, text="全不选", command=lambda: [
+            v.set(False) for v in controller.pitch_group_vars.values()
+        ] + [
+            controller.bass_section_var.set(False),
+            controller.mid_section_var.set(False),
+            controller.treble_section_var.set(False)
+        ]).pack(side=tk.LEFT)
 
     # 2) 主旋律提取（与 analyzer.extract_melody 参数对接）
     if tab_settings is not None:
