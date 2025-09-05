@@ -77,15 +77,44 @@ class UIManager:
         title_frame = ttk.Frame(self.main_container)
         title_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
-        # 标题
-        title_font = ("Microsoft YaHei", 18, "bold")
-        # 只显示游戏名（由 App 通过 set_title_suffix 传入），默认显示“开放空间”
-        self._base_title = ""
-        self.title_label = ttk.Label(title_frame, text="开放空间", font=title_font)
-        self.title_label.pack(side=tk.LEFT)
+        # 创建功能按钮容器
+        functions_frame = ttk.Frame(title_frame)
+        functions_frame.pack(side=tk.LEFT, padx=10)
+        
+        # 定义一个创建标题栏按钮的辅助方法
+        def create_title_button(text, command=None):
+            button = ttk.Button(functions_frame, text=text)
+            if command:
+                button.config(command=command)
+            button.pack(side=tk.LEFT, padx=(0, 8))
+            return button
+        
+        # 创建乐器板块按钮
+        create_title_button("电子琴", lambda: self._on_title_action("inst-epiano"))
+        create_title_button("吉他", lambda: self._on_title_action("inst-guitar"))
+        create_title_button("贝斯", lambda: self._on_title_action("inst-bass"))
+        create_title_button("架子鼓", lambda: self._on_title_action("inst-drums"))
+        
+        # 创建分隔符
+        ttk.Separator(functions_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        
+        # 创建工具按钮
+        create_title_button("音频转MIDI", lambda: self._on_title_action("tool-audio2midi"))
         
         # 外观控制
         self._create_appearance_controls(title_frame)
+        
+        # 初始化回调函数
+        self._title_action_callback = None
+        
+    def set_title_action_callback(self, callback):
+        """设置标题栏按钮的回调函数"""
+        self._title_action_callback = callback
+        
+    def _on_title_action(self, key):
+        """标题栏按钮点击事件处理"""
+        if self._title_action_callback:
+            self._title_action_callback(key)
     
     def _create_appearance_controls(self, parent):
         """创建外观控制组件"""
@@ -150,7 +179,7 @@ class UIManager:
         
         # 左侧框架 - 主要功能区域（内含：侧边栏容器 + 左侧内容容器）
         self.left_frame = ttk.Frame(self.paned_window)
-        self.paned_window.add(self.left_frame, weight=2)
+        self.paned_window.add(self.left_frame, weight=1)
         # 在 left_frame 内构建一个左右壳层：左为侧边栏、右为实际页面内容
         self.left_shell = ttk.Frame(self.left_frame)
         self.left_shell.pack(fill=tk.BOTH, expand=True)
@@ -492,4 +521,4 @@ class UIManager:
         if self.event_bus:
             self.event_bus.publish('system.error', {'message': message}, 'UIManager')
         else:
-            print(f"[UIManager] {message}") 
+            print(f"[UIManager] {message}")

@@ -384,48 +384,35 @@ class MeowFieldAutoPiano:
         return
     
     def _create_sidebar_window(self):
-        """在 UIManager.left_sidebar_holder 中创建嵌入式侧边栏。"""
+        """禁用侧边栏创建，功能已移至标题栏"""
         try:
-            self.sidebar_width_expanded = 200
-            self.sidebar_width_collapsed = 40
-            self.sidebar_current_width = self.sidebar_width_expanded
-            # 启用外层壳层列宽动画，以获得平滑且现代的 UI 过渡
-            self.sidebar_shrink_holder = True
+            # 设置标题栏按钮的回调函数
+            if hasattr(self.ui_manager, 'set_title_action_callback'):
+                self.ui_manager.set_title_action_callback(self._on_sidebar_action)
+            
+            # 移除侧边栏占位空间
+            shell = getattr(self.ui_manager, 'left_shell', None)
+            if shell is not None:
+                try:
+                    # 设置左侧栏宽度为0，隐藏侧边栏区域
+                    shell.grid_columnconfigure(0, minsize=0, weight=0)
+                    # 增加内容区域权重
+                    shell.grid_columnconfigure(1, weight=1)
+                except Exception:
+                    pass
+            
+            # 隐藏侧边栏容器
             holder = getattr(self.ui_manager, 'left_sidebar_holder', None)
-            if holder is None:
-                # 兼容：若不存在 holder，则退回在 left_frame 左侧创建一个holder
-                self.ui_manager.left_frame.pack_forget()
-                shell = ttk.Frame(self.ui_manager.left_frame)
-                shell.pack(fill=tk.BOTH, expand=True)
-                holder = ttk.Frame(shell, width=self.sidebar_width_expanded)
-                holder.pack(side=tk.LEFT, fill=tk.Y)
-                self.ui_manager.left_content_frame = ttk.Frame(shell)
-                self.ui_manager.left_content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            try:
-                holder.pack_propagate(False)
-            except Exception:
-                pass
-            # 初始化壳层列宽为展开宽度（通过 grid 列 minsize 控制）
-            try:
-                shell = getattr(self.ui_manager, 'left_shell', None)
-                if shell is not None:
-                    shell.grid_columnconfigure(0, minsize=self.sidebar_width_expanded)
-            except Exception:
-                pass
-            # 在 holder 内创建侧边栏
-            self.sidebar = Sidebar(
-                holder,
-                on_action=self._on_sidebar_action,
-                width=self.sidebar_width_expanded,
-                # 外层不缩放时，on_width 不触发外层宽度变化
-                on_width=(lambda w: self._update_sidebar_width(w)) if self.sidebar_shrink_holder else (lambda w: None)
-            )
-            self.sidebar.attach(use_pack=True)
-            # 设置初始宽度
-            if self.sidebar_shrink_holder:
-                self._update_sidebar_width(self.sidebar_width_expanded)
+            if holder is not None:
+                try:
+                    holder.pack_forget()
+                    holder.grid_forget()
+                except Exception:
+                    pass
+            
+            self._log_message("侧边栏已禁用，功能已移至标题栏", "INFO")
         except Exception as e:
-            self._log_message(f"创建侧边栏失败: {e}", "ERROR")
+            self._log_message(f"禁用侧边栏失败: {e}", "ERROR")
 
     def _on_sidebar_configure(self, event=None):
         """不再响应内部内容尺寸变化，避免反馈循环导致闪烁。"""
@@ -2944,4 +2931,4 @@ class MeowFieldAutoPiano:
         except Exception as e:
             error_msg = f"应用程序运行失败: {e}"
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': error_msg}, 'App')
-            print(error_msg) 
+            print(error_msg)
