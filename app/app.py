@@ -929,12 +929,8 @@ class MeowFieldAutoPiano:
     def _on_system_shutdown(self, event):
         """系统关闭事件"""
         try:
-            # 调试输出：捕获到 SYSTEM_SHUTDOWN 事件
-            print("[DEBUG] 收到 SYSTEM_SHUTDOWN 事件，准备调用 root.quit()")
-            try:
-                self._log_message("收到 SYSTEM_SHUTDOWN 事件", "INFO")
-            except Exception:
-                pass
+            # 直接调用quit，避免在关闭过程中产生额外输出
+            pass
         except Exception:
             pass
         self.root.quit()
@@ -2817,7 +2813,16 @@ class MeowFieldAutoPiano:
     def _log_message(self, message: str, level: str = "INFO"):
         """记录日志消息"""
         try:
-            if hasattr(self, 'log_text'):
+            # 增强检查：确保log_text存在且未被销毁
+            if hasattr(self, 'log_text') and self.log_text is not None:
+                # 尝试检查组件有效性
+                try:
+                    # 尝试一个简单的操作来验证组件是否仍然有效
+                    self.log_text.winfo_exists()
+                except Exception:
+                    # 组件已不可用，直接返回
+                    return
+                    
                 import datetime
                 timestamp = datetime.datetime.now().strftime("%H:%M:%S")
                 formatted_message = f"[{timestamp}] {message}\n"
@@ -2832,8 +2837,12 @@ class MeowFieldAutoPiano:
                 else:
                     formatted_message = f"[{timestamp}] ℹ️ {message}\n"
                 
-                self.log_text.insert(tk.END, formatted_message)
-                self.log_text.see(tk.END)  # 滚动到最新内容
+                # 嵌套try-except以避免单个操作失败影响整体
+                try:
+                    self.log_text.insert(tk.END, formatted_message)
+                    self.log_text.see(tk.END)  # 滚动到最新内容
+                except Exception:
+                    pass
 
                 # 若原神简洁页存在，镜像输出到其日志
                 try:
@@ -2843,11 +2852,15 @@ class MeowFieldAutoPiano:
                     pass
                 
                 # 限制日志行数，避免内存占用过大
-                lines = self.log_text.get("1.0", tk.END).split('\n')
-                if len(lines) > 1000:
-                    self.log_text.delete("1.0", "500.0")
+                try:
+                    lines = self.log_text.get("1.0", tk.END).split('\n')
+                    if len(lines) > 1000:
+                        self.log_text.delete("1.0", "500.0")
+                except Exception:
+                    pass
         except Exception as e:
-            print(f"日志记录失败: {e}")
+            # 避免在关闭过程中产生过多错误输出
+            pass
     
     def _add_test_playlist_data(self):
         """添加测试数据到播放列表"""
@@ -2871,13 +2884,11 @@ class MeowFieldAutoPiano:
         try:
             # 启动保护：启动后短时间内忽略关闭请求（防止误触发）
             if getattr(self, '_startup_protect', False):
-                print("[DEBUG] 启动保护启用，忽略关闭请求")
                 return
             # 关闭确认
             try:
                 if not getattr(self, '_allow_close', False):
                     if messagebox.askokcancel("退出", "确定要退出 MeowField AutoPiano 吗？") is False:
-                        print("[DEBUG] 用户取消关闭")
                         return
                     else:
                         # 用户确认后，允许关闭
@@ -2888,7 +2899,6 @@ class MeowFieldAutoPiano:
             except Exception:
                 pass
             # 发布系统关闭事件
-            print("[DEBUG] 触发 _on_closing，发布 SYSTEM_SHUTDOWN 并销毁 root")
             self.event_bus.publish(Events.SYSTEM_SHUTDOWN, {}, 'App')
             
             # 销毁窗口
@@ -2911,14 +2921,14 @@ class MeowFieldAutoPiano:
     def _on_root_destroy(self, event=None):
         """根窗口销毁事件（用于调试 mainloop 提前退出）"""
         try:
-            widget = event.widget if event is not None else None
-            is_root = (widget is self.root) if widget is not None else True
-            name = str(widget) if widget is not None else 'root'
-            print(f"[DEBUG] <Destroy> 捕获: widget={name}, is_root={is_root}")
-            try:
-                self._log_message(f"窗口销毁事件: {name}, is_root={is_root}", "INFO")
-            except Exception:
-                pass
+            # 仅在调试模式下输出信息（可选）
+            # widget = event.widget if event is not None else None
+            # is_root = (widget is self.root) if widget is not None else True
+            # name = str(widget) if widget is not None else 'root'
+            # print(f"[DEBUG] <Destroy> 捕获: widget={name}, is_root={is_root}")
+            
+            # 避免在窗口销毁过程中记录日志，防止产生过多输出
+            pass
         except Exception:
             pass
     
