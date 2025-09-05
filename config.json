@@ -43,6 +43,23 @@
         "enable_logging": true,
         "default_volume": 0.7
     },
+    "playback": {
+        "keymap_profile": "piano"
+    },
+    "ntp": {
+        "servers": [
+            "ntp.ntsc.ac.cn",
+            "time.apple.com",
+            "time1.cloud.tencent.com",
+            "time2.cloud.tencent.com",
+            "time3.cloud.tencent.com",
+            "time4.cloud.tencent.com",
+            "time5.cloud.tencent.com",
+            "pool.ntp.org"
+        ],
+        "timeout": 1.5,
+        "max_tries": 5
+    },
     "ui": {
         "theme_name": "pink",
         "theme_mode": "light",

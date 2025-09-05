@@ -66,7 +66,7 @@ class MeowFieldAutoPiano:
         # 创建主窗口（ttkbootstrap 优先）
         if 'ttkb' in globals() and ttkb is not None:
             try:
-                self.root = ttkb.Window(themename="flatly")  # 现代扁平主题
+                self.root = ttkb.Window(themename="pink")  # 现代扁平主题
                 self._using_ttkbootstrap = True
             except Exception:
                 self.root = tk.Tk()
