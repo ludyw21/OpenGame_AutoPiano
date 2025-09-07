@@ -141,30 +141,8 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         for i in range(4):
             play_frame.columnconfigure(i, weight=1)
 
-    # 7) 回放 · 多键/防重触发（仅非架子鼓显示；默认“原版风格”）
-    show_multi_key = current_instrument not in ('架子鼓',)
-    if tab_settings is not None and show_multi_key:
-        mk_frame = ttk.LabelFrame(settings_inner, text="回放 · 多键/防重触发", padding="8")
-        mk_frame.pack(fill=tk.X, padx=6, pady=6)
-        ttk.Label(mk_frame, text="短窗多键处理:").grid(row=0, column=0, sticky=tk.W, padx=4)
-        controller.multi_key_mode_var = tk.StringVar(value='原样')
-        ttk.Combobox(mk_frame, textvariable=controller.multi_key_mode_var, state='readonly', width=10,
-                     values=['原样','合并(块和弦)','琶音']).grid(row=0, column=1, sticky=tk.W)
-        ttk.Label(mk_frame, text="短窗宽度(ms):").grid(row=0, column=2, sticky=tk.E, padx=(12,4))
-        controller.multi_key_window_var = tk.IntVar(value=50)
-        ttk.Spinbox(mk_frame, from_=0, to=200, increment=5, width=10, textvariable=controller.multi_key_window_var).grid(row=0, column=3, sticky=tk.W)
-
-        controller.anti_retrigger_enable_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(mk_frame, text="跨分部防重触发", variable=controller.anti_retrigger_enable_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
-        ttk.Label(mk_frame, text="防重触发窗口(ms):").grid(row=1, column=2, sticky=tk.E, padx=(12,4))
-        controller.anti_retrigger_window_var = tk.IntVar(value=30)
-        ttk.Spinbox(mk_frame, from_=0, to=200, increment=5, width=10, textvariable=controller.anti_retrigger_window_var).grid(row=1, column=3, sticky=tk.W)
-
-        for i in range(4):
-            mk_frame.columnconfigure(i, weight=1)
-        ttk.Checkbutton(play_frame, text="用和弦键替代主音键（去根音）", variable=controller.chord_replace_melody_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
-        # 块和弦窗口控件已在上方创建，这里仅保留引用
-    elif tab_settings is not None and not show_chord_accomp:
+    # 7) 架子鼓禁用和弦（兜底设置）
+    if tab_settings is not None and not show_chord_accomp:
         # 为贝斯和架子鼓设置默认值（禁用和弦）
         controller.chord_min_sustain_ms_var = tk.IntVar(value=1500)
         controller.chord_replace_melody_var = tk.BooleanVar(value=False)
@@ -189,17 +167,7 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
                 v.trace_add('write', _apply_player_opts_on_change)
             except Exception:
                 pass
-        if show_multi_key:
-            for v in (
-                controller.multi_key_mode_var,
-                controller.multi_key_window_var,
-                controller.anti_retrigger_enable_var,
-                controller.anti_retrigger_window_var,
-            ):
-                try:
-                    v.trace_add('write', _apply_player_opts_on_change)
-                except Exception:
-                    pass
+        # 多键相关设置已从“MIDI解析设置”中移除
 
     # ========== 事件表 ==========
     if tab_events is not None:

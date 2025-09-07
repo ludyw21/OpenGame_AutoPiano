@@ -92,6 +92,7 @@ class DrumsMidiParser:
         # 提取鼓音符
         active: Dict[tuple, List[Dict[str, Any]]] = {}
         notes: List[Dict[str, Any]] = []
+        multi_track = (len(mid.tracks) > 1)
         for it in msgs:
             msg = it["msg"]
             if msg.type not in ("note_on", "note_off", "set_tempo"):
@@ -103,8 +104,11 @@ class DrumsMidiParser:
             n = getattr(msg, "note", None)
             if n is None:
                 continue
-            # 兜底：若非通道10，但处于打击乐典型音高，也认为可能是鼓
-            likely_drum = is_drum_ch or (35 <= int(n) <= 81)
+            # 规则：多轨时仅保留通道10（channel=9）；单轨时全读
+            if multi_track:
+                likely_drum = is_drum_ch
+            else:
+                likely_drum = True
             if not likely_drum:
                 continue
             if msg.type == "note_on" and msg.velocity > 0:

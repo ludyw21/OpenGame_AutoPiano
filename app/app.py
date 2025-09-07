@@ -2045,8 +2045,7 @@ class MeowFieldAutoPiano:
             mode_map = {'原样': 'original', '合并(块和弦)': 'merge', '琶音': 'arpeggio'}
             multi_key_cluster_mode = mode_map.get(mode_disp, 'original')
             multi_key_cluster_window_ms = int(getattr(self, 'multi_key_window_var', tk.IntVar(value=50)).get() if hasattr(self, 'multi_key_window_var') else 50)
-            anti_retrigger_across_parts = bool(getattr(self, 'anti_retrigger_enable_var', tk.BooleanVar(value=True)).get() if hasattr(self, 'anti_retrigger_enable_var') else True)
-            anti_retrigger_window_ms = int(getattr(self, 'anti_retrigger_window_var', tk.IntVar(value=30)).get() if hasattr(self, 'anti_retrigger_window_var') else 30)
+
 
             # 针对架子鼓：保持原样风格，且不下发和弦（UI已隐藏，但再次兜底）
             cur_inst = getattr(self, 'current_instrument', '电子琴')
@@ -2065,8 +2064,6 @@ class MeowFieldAutoPiano:
                 'chord_replace_melody': chord_replace_melody,
                 'multi_key_cluster_mode': multi_key_cluster_mode,
                 'multi_key_cluster_window_ms': multi_key_cluster_window_ms,
-                'anti_retrigger_across_parts': anti_retrigger_across_parts,
-                'anti_retrigger_window_ms': anti_retrigger_window_ms,
             }
 
             # 通过服务层下发，兼容未来替换播放器

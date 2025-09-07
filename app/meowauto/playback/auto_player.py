@@ -49,9 +49,6 @@ class AutoPlayer:
             # 多轨/多分部短时间内多键处理策略：'arpeggio' | 'merge' | 'original'
             'multi_key_cluster_mode': 'merge',
             'multi_key_cluster_window_ms': 50,
-            # 跨分部防重触发：同一键在窗口内重复的 on/off 抑制
-            'anti_retrigger_across_parts': True,
-            'anti_retrigger_window_ms': 30,
         }
         self.playback_callbacks = {
             'on_start': None,
@@ -138,11 +135,6 @@ class AutoPlayer:
             events = self._normalize_multi_key_clusters(events)
         except Exception:
             pass
-        # 跨分部防重触发
-        try:
-            events = self._apply_cross_part_anti_retrigger(events)
-        except Exception:
-            pass
         # 对同一时间戳，保证 note_off 先于 note_on
         try:
             events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
@@ -220,17 +212,13 @@ class AutoPlayer:
             self.logger.log("鼓MIDI映射为空", "ERROR")
             return False
 
-        # 去重 + 多键窗口规范化 + 跨分部防重触发 + 排序（同时间戳先off后on）
+        # 去重 + 多键窗口规范化 + 对同一时间戳，保证 note_off 先于 note_on
         try:
             events = self._dedup_same_time_same_key(events)
         except Exception:
             pass
         try:
             events = self._normalize_multi_key_clusters(events)
-        except Exception:
-            pass
-        try:
-            events = self._apply_cross_part_anti_retrigger(events)
         except Exception:
             pass
         try:
@@ -314,11 +302,6 @@ class AutoPlayer:
         # 多键窗口规范化（琶音/合并/原样）
         try:
             events = self._normalize_multi_key_clusters(events)
-        except Exception:
-            pass
-        # 跨分部防重触发
-        try:
-            events = self._apply_cross_part_anti_retrigger(events)
         except Exception:
             pass
         # 预处理：同键延长音并集 + tap（release->press，gap 可为 0ms）
@@ -423,11 +406,6 @@ class AutoPlayer:
         # 多键窗口规范化（琶音/合并/原样）
         try:
             events = self._normalize_multi_key_clusters(events)
-        except Exception:
-            pass
-        # 跨分部防重触发
-        try:
-            events = self._apply_cross_part_anti_retrigger(events)
         except Exception:
             pass
         # 预处理：同键延长音并集 + tap
@@ -1279,60 +1257,7 @@ class AutoPlayer:
                     # 均匀铺开 [t0, t0+span) 区间
                     e['start_time'] = t0 + (span * i / max(1, n))
         return events
-
-    def _apply_cross_part_anti_retrigger(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """跨分部防重触发：在一个时间窗口内，抑制同一键的重复 note_on 或无效 note_off。
-        - 依据 'anti_retrigger_across_parts' 与 'anti_retrigger_window_ms'；
-        - 仅对 key 有效的按键事件生效；
-        - 策略：
-          * note_on：若距离上次按下小于窗口，则丢弃本次按下；
-          * note_off：若该键当前未被按下（计数为0），则丢弃本次释放，避免“空释放”。
-        """
-        if not events or not bool(self.options.get('anti_retrigger_across_parts', True)):
-            return events
-        try:
-            win_ms = float(self.options.get('anti_retrigger_window_ms', 30))
-        except Exception:
-            win_ms = 30.0
-        win = max(0.0, win_ms) / 1000.0
-        if win <= 0:
-            return events
-
-        # 按时间顺序处理，保证决策稳定
-        try:
-            evs = sorted(events, key=lambda x: (float(x.get('start_time', 0.0)), 0 if x.get('type') == 'note_off' else 1))
-        except Exception:
-            evs = list(events)
-        last_on_time: Dict[str, float] = {}
-        active_counts: Dict[str, int] = {}
-        out: List[Dict[str, Any]] = []
-        for ev in evs:
-            try:
-                k = ev.get('key')
-                t = float(ev.get('start_time', 0.0))
-                typ = ev.get('type')
-                if not k or typ not in ('note_on','note_off'):
-                    out.append(ev)
-                    continue
-                if typ == 'note_on':
-                    last_t = last_on_time.get(str(k), None)
-                    if last_t is not None and (t - last_t) < win:
-                        # 抑制过密的重复按下
-                        continue
-                    last_on_time[str(k)] = t
-                    active_counts[str(k)] = active_counts.get(str(k), 0) + 1
-                    out.append(ev)
-                else:  # note_off
-                    cnt = active_counts.get(str(k), 0)
-                    if cnt <= 0:
-                        # 空释放，丢弃
-                        continue
-                    cnt -= 1
-                    active_counts[str(k)] = cnt
-                    out.append(ev)
-            except Exception:
-                out.append(ev)
-        return out
+ 
     
     def _generate_chord_accompaniment(self, events: List[Dict[str, Any]], key_mapping: Dict[str, str], strategy_name: Optional[str]) -> List[Dict[str, Any]]:
         """根据已映射旋律事件，调用新版 ChordEngine 生成与主音节奏对齐的和弦伴奏。"""
