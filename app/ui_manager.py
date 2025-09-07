@@ -36,6 +36,12 @@ class UIManager:
         
         # 绑定窗口事件
         self._bind_window_events()
+        
+        # 启动日志：开源声明
+        try:
+            self._log_info("本软件开源且免费。如果你是付费购买，请立即申请退款，并从官方仓库获取。by薮薮猫猫")
+        except Exception:
+            pass
     
     def _init_styles(self):
         """初始化样式系统"""
@@ -50,6 +56,25 @@ class UIManager:
         # 设置按钮样式
         self.accent_button_style = "Accent.TButton" if self.use_ttkbootstrap else "TButton"
         self.secondary_button_style = "Secondary.TButton" if self.use_ttkbootstrap else "TButton"
+        
+        # 全局统一：Win11 蓝白风格（尽最大可能在原生 ttk 下生效）
+        try:
+            accent = '#0A84FF'
+            # Treeview 行高与选中高亮
+            self.style.configure('Treeview', rowheight=28, font=("Segoe UI", 10), fieldbackground='white', background='white')
+            self.style.configure('Treeview.Heading', font=("Segoe UI", 10, 'bold'))
+            self.style.map('Treeview', background=[('selected', '#E6F0FF')], foreground=[('selected', 'black')])
+            # Combobox 强调（选中/焦点）
+            self.style.configure('TCombobox', arrowsize=16)
+            self.style.map('TCombobox', fieldbackground=[('focus', 'white')], foreground=[('focus', 'black')])
+            # Radiobutton/Checkbutton 字体统一
+            self.style.configure('TRadiobutton', font=("Segoe UI", 10))
+            self.style.configure('TCheckbutton', font=("Segoe UI", 10))
+            # Label/Entry 基础字体
+            self.style.configure('TLabel', font=("Segoe UI", 10))
+            self.style.configure('TEntry', font=("Segoe UI", 10))
+        except Exception:
+            pass
     
     def _create_main_layout(self):
         """创建主布局"""
@@ -63,7 +88,7 @@ class UIManager:
         self.main_container.columnconfigure(1, weight=1)
         self.main_container.columnconfigure(2, weight=0)
         
-        # 创建标题栏
+        # 创建标题栏（移除主题/模式/密度等外观设置项）
         self._create_title_bar()
         
         # 创建内容区域
@@ -73,63 +98,22 @@ class UIManager:
         self._create_status_bar()
     
     def _create_title_bar(self):
-        """创建标题栏"""
+        """创建标题栏（简化为仅显示标题，不含任何主题/模式/密度控件）"""
         title_frame = ttk.Frame(self.main_container)
         title_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # 标题
         title_font = ("Microsoft YaHei", 18, "bold")
-        # 只显示游戏名（由 App 通过 set_title_suffix 传入），默认显示“开放空间”
         self._base_title = ""
         self.title_label = ttk.Label(title_frame, text="开放空间", font=title_font)
         self.title_label.pack(side=tk.LEFT)
-        
-        # 外观控制
-        self._create_appearance_controls(title_frame)
+        # 署名（小字）
+        try:
+            sign_font = ("Microsoft YaHei", 10, "normal")
+            self.signature_label = ttk.Label(title_frame, text="  by薮薮猫猫", font=sign_font, foreground="#666666")
+            self.signature_label.pack(side=tk.LEFT, padx=(6, 0))
+        except Exception:
+            pass
     
-    def _create_appearance_controls(self, parent):
-        """创建外观控制组件"""
-        controls_frame = ttk.Frame(parent)
-        controls_frame.pack(side=tk.RIGHT)
-        
-        # 主题选择
-        ttk.Label(controls_frame, text="主题:").pack(side=tk.LEFT)
-        self.theme_var = tk.StringVar(value=self.current_theme)
-        theme_combo = ttk.Combobox(
-            controls_frame, 
-            width=12, 
-            state="readonly", 
-            textvariable=self.theme_var,
-            values=self.themes['light'] + self.themes['dark']
-        )
-        theme_combo.pack(side=tk.LEFT, padx=(4, 8))
-        theme_combo.bind('<<ComboboxSelected>>', self._on_theme_change)
-        
-        # 模式选择
-        ttk.Label(controls_frame, text="模式:").pack(side=tk.LEFT)
-        self.mode_var = tk.StringVar(value=self.current_mode)
-        mode_combo = ttk.Combobox(
-            controls_frame, 
-            width=7, 
-            state="readonly", 
-            textvariable=self.mode_var,
-            values=["light", "dark"]
-        )
-        mode_combo.pack(side=tk.LEFT, padx=(4, 8))
-        mode_combo.bind('<<ComboboxSelected>>', self._on_mode_change)
-        
-        # 密度选择
-        ttk.Label(controls_frame, text="密度:").pack(side=tk.LEFT)
-        self.density_var = tk.StringVar(value=self.density)
-        density_combo = ttk.Combobox(
-            controls_frame, 
-            width=10, 
-            state="readonly", 
-            textvariable=self.density_var,
-            values=["comfortable", "compact"]
-        )
-        density_combo.pack(side=tk.LEFT, padx=(4, 0))
-        density_combo.bind('<<ComboboxSelected>>', self._on_density_change)
+    # 外观控制已移除：统一设计语言，不提供主题/模式/密度切换
     
     def _create_content_area(self):
         """创建内容区域"""
@@ -144,13 +128,9 @@ class UIManager:
         content_frame = ttk.Frame(self.page_container)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # 使用Panedwindow创建可调整大小的左右分栏
-        self.paned_window = ttk.PanedWindow(content_frame, orient=tk.HORIZONTAL)
-        self.paned_window.pack(fill=tk.BOTH, expand=True)
-        
-        # 左侧框架 - 主要功能区域（内含：侧边栏容器 + 左侧内容容器）
-        self.left_frame = ttk.Frame(self.paned_window)
-        self.paned_window.add(self.left_frame, weight=2)
+        # 废弃右侧分栏：仅保留左侧主区域，占满可用空间
+        self.left_frame = ttk.Frame(content_frame)
+        self.left_frame.pack(fill=tk.BOTH, expand=True)
         # 在 left_frame 内构建一个左右壳层：左为侧边栏、右为实际页面内容
         self.left_shell = ttk.Frame(self.left_frame)
         self.left_shell.pack(fill=tk.BOTH, expand=True)
@@ -172,9 +152,8 @@ class UIManager:
         self.left_content_frame = ttk.Frame(self.left_shell)
         self.left_content_frame.grid(row=0, column=1, sticky=tk.NSEW)
         
-        # 右侧框架 - 日志和状态区域
-        self.right_frame = ttk.Frame(self.paned_window)
-        self.paned_window.add(self.right_frame, weight=1)
+        # 保留占位的 right_frame 以兼容旧代码（不加入布局，不显示）
+        self.right_frame = ttk.Frame(self.main_container)
         
         # 配置左右框架的网格权重，确保子组件能正确扩展
         try:
@@ -183,18 +162,14 @@ class UIManager:
         except Exception:
             pass
         
-        self.right_frame.columnconfigure(0, weight=1)
-        self.right_frame.rowconfigure(0, weight=1)
+        # 右侧框架不参与布局，无需配置权重
     
     def _create_status_bar(self):
-        """创建状态栏"""
-        self.status_var = tk.StringVar(value="就绪")
-        status_bar = ttk.Label(
-            self.main_container, 
-            textvariable=self.status_var, 
-            relief=tk.SUNKEN
-        )
-        status_bar.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+        """初始化状态变量（不渲染状态栏控件）。"""
+        try:
+            self.status_var = tk.StringVar(value="")
+        except Exception:
+            self.status_var = None
 
     def set_title_suffix(self, suffix: str | None):
         """设置标题后缀（例如当前游戏名）"""
@@ -209,7 +184,7 @@ class UIManager:
     def _bind_window_events(self):
         """绑定窗口事件"""
         self.root.bind('<Configure>', self._on_window_resize)
-        self.root.bind('<Key>', self._on_key_press)
+        # 取消主题/密度快捷键绑定
     
     def _on_window_resize(self, event):
         """窗口大小改变事件"""

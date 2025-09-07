@@ -37,15 +37,21 @@ class AutoPlayer:
             'spin_threshold_ms': 1,            # 忙等切换阈值
             'post_action_sleep_ms': 0,         # 每次发按键后追加微睡眠
             'enable_chord_accomp': True,       # 启用和弦伴奏
-            'chord_accomp_mode': 'triad',
-            'chord_accomp_min_sustain_ms': 120,
+            'chord_min_sustain_ms': 1500,      # 和弦最短/默认持续时长（ms）
+            'chord_block_window_ms': 50,       # 将同一时间窗口内的按键对齐到同刻（块和弦）
             'chord_replace_melody': False,     # 用和弦键替代主音键（去根音）
             'enable_quantize': False,
             'quantize_grid_ms': 30,
             'enable_black_transpose': True,
             'black_transpose_strategy': 'nearest',
             'enable_key_fallback': True,
-            'tap_gap_ms': 0
+            'tap_gap_ms': 0,
+            # 多轨/多分部短时间内多键处理策略：'arpeggio' | 'merge' | 'original'
+            'multi_key_cluster_mode': 'merge',
+            'multi_key_cluster_window_ms': 50,
+            # 跨分部防重触发：同一键在窗口内重复的 on/off 抑制
+            'anti_retrigger_across_parts': True,
+            'anti_retrigger_window_ms': 30,
         }
         self.playback_callbacks = {
             'on_start': None,
@@ -122,6 +128,21 @@ class AutoPlayer:
         if not events:
             return False
 
+        # 去重：同一时刻映射到同一键位的重复事件只保留一个
+        try:
+            events = self._dedup_same_time_same_key(events)
+        except Exception:
+            pass
+        # 多键窗口规范化（琶音/合并/原样）
+        try:
+            events = self._normalize_multi_key_clusters(events)
+        except Exception:
+            pass
+        # 跨分部防重触发
+        try:
+            events = self._apply_cross_part_anti_retrigger(events)
+        except Exception:
+            pass
         # 对同一时间戳，保证 note_off 先于 note_on
         try:
             events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
@@ -199,7 +220,19 @@ class AutoPlayer:
             self.logger.log("鼓MIDI映射为空", "ERROR")
             return False
 
-        # 排序，同时间戳先off后on
+        # 去重 + 多键窗口规范化 + 跨分部防重触发 + 排序（同时间戳先off后on）
+        try:
+            events = self._dedup_same_time_same_key(events)
+        except Exception:
+            pass
+        try:
+            events = self._normalize_multi_key_clusters(events)
+        except Exception:
+            pass
+        try:
+            events = self._apply_cross_part_anti_retrigger(events)
+        except Exception:
+            pass
         try:
             events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
         except Exception:
@@ -273,6 +306,21 @@ class AutoPlayer:
             except Exception:
                 pass
 
+        # 去重：同刻同键仅保留一个
+        try:
+            events = self._dedup_same_time_same_key(events)
+        except Exception:
+            pass
+        # 多键窗口规范化（琶音/合并/原样）
+        try:
+            events = self._normalize_multi_key_clusters(events)
+        except Exception:
+            pass
+        # 跨分部防重触发
+        try:
+            events = self._apply_cross_part_anti_retrigger(events)
+        except Exception:
+            pass
         # 预处理：同键延长音并集 + tap（release->press，gap 可为 0ms）
         try:
             events = self._apply_union_and_tap(events)
@@ -367,6 +415,21 @@ class AutoPlayer:
             except Exception:
                 pass
 
+        # 去重：同刻同键仅保留一个
+        try:
+            events = self._dedup_same_time_same_key(events)
+        except Exception:
+            pass
+        # 多键窗口规范化（琶音/合并/原样）
+        try:
+            events = self._normalize_multi_key_clusters(events)
+        except Exception:
+            pass
+        # 跨分部防重触发
+        try:
+            events = self._apply_cross_part_anti_retrigger(events)
+        except Exception:
+            pass
         # 预处理：同键延长音并集 + tap
         try:
             events = self._apply_union_and_tap(events)
@@ -554,6 +617,13 @@ class AutoPlayer:
                 events.sort(key=lambda x: x['start_time'])
             total_time = events[-1]['start_time'] if events else 0.0
 
+            if self.debug:
+                self.logger.log(f"[DEBUG] 开始播放 {len(events)} 个事件，速度倍率: {self.current_tempo}", "DEBUG")
+                if events:
+                    first_time = events[0]['start_time']
+                    last_time = events[-1]['start_time'] if len(events) > 1 else first_time
+                    self.logger.log(f"[DEBUG] 事件时间范围: {first_time:.3f}s - {last_time:.3f}s", "DEBUG")
+
             from time import perf_counter
             start_perf = perf_counter()
             key_sender = KeySender()
@@ -572,6 +642,9 @@ class AutoPlayer:
                     time.sleep(0.01)
 
                 ev = events[idx]
+                # 播放速度计算：用户速度倍率应该是除法
+                # current_tempo > 1.0 时播放更快（时间间隔更短）
+                # current_tempo < 1.0 时播放更慢（时间间隔更长）
                 group_time = ev['start_time'] / max(0.01, self.current_tempo)
 
                 # 分级等待到目标时间（考虑提前量）
@@ -653,9 +726,10 @@ class AutoPlayer:
             
             midi = mido.MidiFile(midi_file)
             events: List[Dict[str, Any]] = []
-            default_tempo = 500000  # 默认120 BPM (微秒/拍)
-            ticks_per_beat = midi.ticks_per_beat
-            current_tempo = default_tempo
+            
+            # 直接使用mido的原生时间转换，避免手动tempo计算错误
+            if self.debug:
+                self.logger.log(f"[DEBUG] MIDI文件信息: ticks_per_beat={midi.ticks_per_beat}, length={midi.length:.3f}s", "DEBUG")
             
             # 如果没有提供键位映射，使用默认映射
             if not key_mapping:
@@ -664,13 +738,20 @@ class AutoPlayer:
             # 解析策略
             strategy = get_strategy(strategy_name or "strategy_21key")
 
+            # 使用mido原生时间转换收集所有音符事件
+            all_messages = []
+            
+            # 采用之前版本2的有效MIDI解析方案
+            default_tempo = 500000  # 默认120 BPM (微秒/拍)
+            ticks_per_beat = midi.ticks_per_beat
+            current_tempo = default_tempo
+            
             # 收集所有轨道消息及其轨内时间
             all_messages = []
             for track_num, track in enumerate(midi.tracks):
                 track_time = 0
                 for msg in track:
-                    # 先累加本条消息的 delta ticks，得到该消息的绝对 tick 位置
-                    # 注意：mido 中 msg.time 为“自上条消息后的增量tick”。
+                    # 先累积 delta，再记录本条消息所在的绝对 tick，避免将事件记在“上一刻”
                     track_time += msg.time
                     all_messages.append({
                         'msg': msg,
@@ -681,63 +762,43 @@ class AutoPlayer:
             # 按时间排序所有消息
             all_messages.sort(key=lambda x: x['track_time'])
 
-            # 时间基判断：PPQ(>0) vs SMPTE(<0)
-            is_smpte = bool(ticks_per_beat < 0)
-
-            # 构建时间换算：
-            # - PPQ: 使用 tempo 分段积分
-            # - SMPTE: 忽略 tempo，以 fps * ticks_per_frame 常量计算 seconds_per_tick
+            # 构建全局 tempo 变化表 (tick -> tempo)
             tempo_changes: List[Dict[str, Any]] = []
-            smpte_seconds_per_tick: float = 0.0
-            if not is_smpte:
-                # PPQ
-                tempo_changes.append({'tick': 0, 'tempo': default_tempo, 'acc_seconds': 0.0})
-                last_tempo = default_tempo
-                for mi in all_messages:
-                    msg = mi['msg']
-                    if msg.type == 'set_tempo':
-                        t = mi['track_time']
-                        if not tempo_changes or t != tempo_changes[-1]['tick'] or msg.tempo != last_tempo:
-                            tempo_changes.append({'tick': t, 'tempo': msg.tempo, 'acc_seconds': 0.0})
-                            last_tempo = msg.tempo
+            # 保证从 tick 0 开始有一个 tempo
+            tempo_changes.append({'tick': 0, 'tempo': default_tempo, 'acc_seconds': 0.0})
+            last_tempo = default_tempo
+            for mi in all_messages:
+                msg = mi['msg']
+                if msg.type == 'set_tempo':
+                    t = mi['track_time']
+                    # 仅当与上一次不同才记录，避免重复
+                    if not tempo_changes or t != tempo_changes[-1]['tick'] or msg.tempo != last_tempo:
+                        tempo_changes.append({'tick': t, 'tempo': msg.tempo, 'acc_seconds': 0.0})
+                        last_tempo = msg.tempo
 
-                for i in range(1, len(tempo_changes)):
-                    prev = tempo_changes[i-1]
-                    cur = tempo_changes[i]
-                    delta_ticks = max(0, cur['tick'] - prev['tick'])
-                    seconds_per_tick = (prev['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
-                    cur['acc_seconds'] = prev['acc_seconds'] + delta_ticks * seconds_per_tick
+            # 根据变化的 tick 计算每个变化点的累积秒数 acc_seconds
+            # acc_seconds 为到该变化点开始位置为止的累计秒数
+            for i in range(1, len(tempo_changes)):
+                prev = tempo_changes[i-1]
+                cur = tempo_changes[i]
+                delta_ticks = max(0, cur['tick'] - prev['tick'])
+                seconds_per_tick = (prev['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
+                cur['acc_seconds'] = prev['acc_seconds'] + delta_ticks * seconds_per_tick
 
-                def tick_to_seconds(tick_pos: int) -> float:
-                    # 找到最后一个变化点，其 tick <= tick_pos
-                    idx = 0
-                    for i in range(len(tempo_changes)):
-                        if tempo_changes[i]['tick'] <= tick_pos:
-                            idx = i
-                        else:
-                            break
-                    base = tempo_changes[idx]
-                    seconds_per_tick = (base['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
-                    return base['acc_seconds'] + (tick_pos - base['tick']) * seconds_per_tick
-            else:
-                # SMPTE: ticks_per_beat 为有符号16位，
-                # 高字节（负数）为帧率：-24/-25/-29/-30（-29 表示 29.97fps），低字节为每帧的 ticks 数
-                div = int(ticks_per_beat)
-                # 转成 16 位并取高/低字节
-                hi = (div >> 8) & 0xFF
-                lo = div & 0xFF
-                # hi 是补码，转换为有符号 8 位
-                if hi >= 128:
-                    hi -= 256
-                fps = abs(hi) if hi != 0 else 30  # 兜底 30fps
-                ticks_per_frame = lo if lo > 0 else 80  # 兜底
-                smpte_seconds_per_tick = 1.0 / (float(fps) * float(ticks_per_frame))
-
-                def tick_to_seconds(tick_pos: int) -> float:
-                    return float(tick_pos) * smpte_seconds_per_tick
+            def tick_to_seconds(tick_pos: int) -> float:
+                """将绝对 tick 位置转换为秒，按 tempo 分段积分"""
+                # 找到最后一个变化点，其 tick <= tick_pos
+                idx = 0
+                for i in range(len(tempo_changes)):
+                    if tempo_changes[i]['tick'] <= tick_pos:
+                        idx = i
+                    else:
+                        break
+                base = tempo_changes[idx]
+                seconds_per_tick = (base['tempo'] / 1_000_000.0) / max(1, ticks_per_beat)
+                return base['acc_seconds'] + (tick_pos - base['tick']) * seconds_per_tick
             
             # 处理所有消息
-            global_time = 0
             active_notes = {}
             
             for msg_info in all_messages:
@@ -748,79 +809,81 @@ class AutoPlayer:
                 if msg.type == 'set_tempo':
                     current_tempo = msg.tempo
                     
-                # 统一处理 note_on/note_off，包括 vel=0 的 note_on 作为 note_off
-                ch = getattr(msg, 'channel', 0)
                 if msg.type == 'note_on' and msg.velocity > 0:
-                    # 音符开始：按 (channel, note) 入栈，支持同音重叠
-                    key_id = (ch, msg.note)
-                    stack = active_notes.setdefault(key_id, [])
-                    stack.append({
+                    # 音符开始
+                    note_key = (msg.channel, msg.note)
+                    active_notes[note_key] = {
                         'start_time': track_time,
                         'velocity': msg.velocity,
-                        'channel': ch
-                    })
+                        'channel': getattr(msg, 'channel', 0)
+                    }
 
                 elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                    # 音符结束：匹配最近一次同键入栈
-                    note = msg.note
-                    key_id = (ch, note)
-                    if key_id in active_notes and active_notes[key_id]:
-                        start_info = active_notes[key_id].pop()
-                        if not active_notes[key_id]:
-                            del active_notes[key_id]
-
+                    # 音符结束
+                    note_key = (msg.channel, msg.note)
+                    if note_key in active_notes:
+                        start_info = active_notes.pop(note_key)
+                        
                         # 转换为绝对时间（秒），使用 tempo 表精确换算
                         start_time = tick_to_seconds(start_info['start_time'])
                         end_time = tick_to_seconds(track_time)
-
-                        # 使用策略映射到按键
-                        key = strategy.map_note(note, key_mapping, self.options)
-                        if key:
-                            # 添加按下事件
-                            events.append({
-                                'start_time': start_time,
-                                'type': 'note_on',
-                                'key': key,
-                                'velocity': start_info['velocity'],
-                                'channel': start_info['channel'],
-                                'note': note
-                            })
-
-                            # 添加释放事件
-                            events.append({
-                                'start_time': end_time,
-                                'type': 'note_off',
-                                'key': key,
-                                'velocity': 0,
-                                'channel': ch,
-                                'note': note
-                            })
-                        else:
-                            if self.debug:
-                                try:
-                                    self.logger.log(
-                                        f"[DEBUG] map_note returned None: note={note}, ch={ch}, pc={note % 12}, strategy={getattr(strategy, 'name', 'unknown')}, fallback={bool(self.options.get('enable_key_fallback', True))}",
-                                        "DEBUG",
-                                    )
-                                except Exception:
-                                    pass
+                        
+                        # 应用键位映射
+                        mapped_keys = strategy.map_note_to_keys({
+                            'start_time': start_time,
+                            'end_time': end_time,
+                            'duration': end_time - start_time,
+                            'note': msg.note,
+                            'velocity': start_info['velocity'],
+                            'channel': start_info['channel']
+                        }, key_mapping)
+                        
+                        if mapped_keys:
+                            for key in mapped_keys:
+                                # 添加按下事件
+                                events.append({
+                                    'start_time': start_time,
+                                    'type': 'note_on',
+                                    'key': key,
+                                    'velocity': start_info['velocity'],
+                                    'channel': start_info['channel'],
+                                    'note': msg.note
+                                })
+                                
+                                # 添加释放事件
+                                events.append({
+                                    'start_time': end_time,
+                                    'type': 'note_off',
+                                    'key': key,
+                                    'velocity': 0,
+                                    'channel': getattr(msg, 'channel', 0),
+                                    'note': msg.note
+                                })
             
-            # 处理未结束的音符（设置合理的持续时间），支持 (channel,note) 的多重入栈
-            for (ch, note), stack in list(active_notes.items()):
-                while stack:
-                    info = stack.pop()
-                    start_time = tick_to_seconds(info['start_time'])
-                    # 根据音符区间设置合理的默认持续时间
-                    duration = 0.5  # 默认0.5秒
-                    if note < 60:  # 低音区，持续时间稍长
-                        duration = 0.8
-                    elif note > 72:  # 高音区，持续时间稍短
-                        duration = 0.3
-                    end_time = start_time + duration
-
-                    # 使用策略映射
-                    key = strategy.map_note(note, key_mapping, self.options)
-                    if key:
+            # 处理未结束的音符（设置合理的持续时间）
+            for note_key, info in active_notes.items():
+                start_time = tick_to_seconds(info['start_time'])
+                # 根据音符长度设置合理的持续时间
+                duration = 0.5  # 默认0.5秒
+                note = note_key[1]
+                if note < 60:  # 低音区，持续时间稍长
+                    duration = 0.8
+                elif note > 72:  # 高音区，持续时间稍短
+                    duration = 0.3
+                
+                end_time = start_time + duration
+                
+                mapped_keys = strategy.map_note_to_keys({
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'duration': duration,
+                    'note': note,
+                    'velocity': info['velocity'],
+                    'channel': info['channel']
+                }, key_mapping)
+                
+                if mapped_keys:
+                    for key in mapped_keys:
                         # 添加按下事件
                         events.append({
                             'start_time': start_time,
@@ -830,7 +893,7 @@ class AutoPlayer:
                             'channel': info['channel'],
                             'note': note
                         })
-
+                        
                         # 添加释放事件
                         events.append({
                             'start_time': end_time,
@@ -840,15 +903,16 @@ class AutoPlayer:
                             'channel': info['channel'],
                             'note': note
                         })
-                    else:
-                        if self.debug:
-                            try:
-                                self.logger.log(
-                                    f"[DEBUG] map_note returned None (dangling): note={note}, ch={ch}, pc={note % 12}, strategy={getattr(strategy, 'name', 'unknown')}, fallback={bool(self.options.get('enable_key_fallback', True))}",
-                                    "DEBUG",
-                                )
-                            except Exception:
-                                pass
+            
+            # 按时间排序
+            events.sort(key=lambda x: x['start_time'])
+            
+            if self.debug:
+                self.logger.log(f"[DEBUG] 生成 {len(events)} 个播放事件", "DEBUG")
+                if events:
+                    first_event = events[0]
+                    last_event = events[-1]
+                    self.logger.log(f"[DEBUG] 播放事件时间范围: {first_event['start_time']:.3f}s - {last_event['start_time']:.3f}s", "DEBUG")
             
             # 可选：和弦伴奏或替代
             if events and bool(self.options.get('chord_replace_melody', False)):
@@ -868,9 +932,13 @@ class AutoPlayer:
                 except Exception:
                     pass
 
-            # 预处理：黑键移调（不改变时间，只改变映射），不再做任何时间量化
+            # 预处理：黑键移调与量化（采用版本2的方案）
             if bool(self.options.get('enable_black_transpose', True)):
                 events = midi_tools.transpose_black_keys(events, strategy=str(self.options.get('black_transpose_strategy', 'down')))
+
+            if bool(self.options.get('enable_quantize', True)):
+                grid_ms = int(self.options.get('quantize_grid_ms', 30))
+                events = midi_tools.quantize_events(events, grid_ms=max(1, grid_ms))
 
             # 按时间排序；同一时间戳优先释放再按下，避免抑制快速重按
             try:
@@ -1116,6 +1184,155 @@ class AutoPlayer:
         # 对于原本不包含在 per_key_intervals 的“非按键类事件”，保持（本模块中均是按键事件，可忽略）
         # 最终返回组合后的事件
         return out if out else events
+
+    def _dedup_same_time_same_key(self, events: List[Dict[str, Any]], eps: float = 1e-6) -> List[Dict[str, Any]]:
+        """去重：若同一时刻映射到同一键位上出现重复事件，仅保留一个。
+        - 按 (time_bucket, key, type) 维度去重，保留首次出现，避免将 off 与 on 互相吞并。
+        - time_bucket 采用 eps 容差进行量化，默认 1e-6 秒。
+        """
+        if not events:
+            return events
+        seen = set()
+        out: List[Dict[str, Any]] = []
+        def bucket_time(t: float) -> int:
+            try:
+                return int(round(float(t) / max(eps, 1e-9)))
+            except Exception:
+                return int(round(0.0 / max(eps, 1e-9)))
+        for ev in events:
+            try:
+                k = ev.get('key')
+                t = ev.get('start_time')
+                typ = ev.get('type')
+                if k is None or t is None or typ not in ('note_on','note_off'):
+                    out.append(ev)
+                    continue
+                b = bucket_time(float(t))
+                sig = (b, str(k), str(typ))
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                out.append(ev)
+            except Exception:
+                out.append(ev)
+        return out
+
+    def _normalize_multi_key_clusters(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """多键窗口规范化：控制短时间窗口内的多键触发风格。
+        - mode = 'merge': 将窗口内所有 note_on 对齐到同一时间（块和弦），时间取窗口内最小值或网格对齐。
+        - mode = 'arpeggio': 在窗口内按键序（key 字典序）均匀铺开（琶音效果）。
+        - mode = 'original': 不处理。
+        仅处理 note_on 事件；note_off 保持原样（后续 union/tap 会处理时值连贯性）。
+        """
+        if not events:
+            return events
+        mode = str(self.options.get('multi_key_cluster_mode', 'merge')).lower()
+        if mode not in ('merge', 'arpeggio'):
+            return events  # original
+        try:
+            win_ms = float(self.options.get('multi_key_cluster_window_ms', 50))
+        except Exception:
+            win_ms = 50.0
+        win = max(0.0, win_ms) / 1000.0
+        if win <= 0:
+            return events
+
+        # 仅取 note_on 参与聚类
+        ons = [ev for ev in events if ev.get('type') == 'note_on' and ev.get('start_time') is not None]
+        if not ons:
+            return events
+        # 排序后聚类
+        ons_sorted = sorted(ons, key=lambda x: float(x.get('start_time', 0.0)))
+        clusters: List[List[Dict[str, Any]]] = []
+        cur: List[Dict[str, Any]] = []
+        for ev in ons_sorted:
+            t = float(ev.get('start_time', 0.0))
+            if not cur:
+                cur = [ev]
+            else:
+                t0 = float(cur[0].get('start_time', 0.0))
+                if (t - t0) <= win:
+                    cur.append(ev)
+                else:
+                    clusters.append(cur)
+                    cur = [ev]
+        if cur:
+            clusters.append(cur)
+
+        # 应用处理
+        if mode == 'merge':
+            for cluster in clusters:
+                t0 = min(float(e.get('start_time', 0.0)) for e in cluster)
+                # 对齐到 t0，使同窗内形成“块和弦”
+                for e in cluster:
+                    e['start_time'] = t0
+        elif mode == 'arpeggio':
+            # 在窗口内均匀分布 note_on，按 key 排序稳定输出
+            for cluster in clusters:
+                if len(cluster) <= 1:
+                    continue
+                t0 = min(float(e.get('start_time', 0.0)) for e in cluster)
+                span = max(win, 1e-6)
+                cluster_sorted = sorted(cluster, key=lambda x: str(x.get('key')))
+                n = len(cluster_sorted)
+                for i, e in enumerate(cluster_sorted):
+                    # 均匀铺开 [t0, t0+span) 区间
+                    e['start_time'] = t0 + (span * i / max(1, n))
+        return events
+
+    def _apply_cross_part_anti_retrigger(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """跨分部防重触发：在一个时间窗口内，抑制同一键的重复 note_on 或无效 note_off。
+        - 依据 'anti_retrigger_across_parts' 与 'anti_retrigger_window_ms'；
+        - 仅对 key 有效的按键事件生效；
+        - 策略：
+          * note_on：若距离上次按下小于窗口，则丢弃本次按下；
+          * note_off：若该键当前未被按下（计数为0），则丢弃本次释放，避免“空释放”。
+        """
+        if not events or not bool(self.options.get('anti_retrigger_across_parts', True)):
+            return events
+        try:
+            win_ms = float(self.options.get('anti_retrigger_window_ms', 30))
+        except Exception:
+            win_ms = 30.0
+        win = max(0.0, win_ms) / 1000.0
+        if win <= 0:
+            return events
+
+        # 按时间顺序处理，保证决策稳定
+        try:
+            evs = sorted(events, key=lambda x: (float(x.get('start_time', 0.0)), 0 if x.get('type') == 'note_off' else 1))
+        except Exception:
+            evs = list(events)
+        last_on_time: Dict[str, float] = {}
+        active_counts: Dict[str, int] = {}
+        out: List[Dict[str, Any]] = []
+        for ev in evs:
+            try:
+                k = ev.get('key')
+                t = float(ev.get('start_time', 0.0))
+                typ = ev.get('type')
+                if not k or typ not in ('note_on','note_off'):
+                    out.append(ev)
+                    continue
+                if typ == 'note_on':
+                    last_t = last_on_time.get(str(k), None)
+                    if last_t is not None and (t - last_t) < win:
+                        # 抑制过密的重复按下
+                        continue
+                    last_on_time[str(k)] = t
+                    active_counts[str(k)] = active_counts.get(str(k), 0) + 1
+                    out.append(ev)
+                else:  # note_off
+                    cnt = active_counts.get(str(k), 0)
+                    if cnt <= 0:
+                        # 空释放，丢弃
+                        continue
+                    cnt -= 1
+                    active_counts[str(k)] = cnt
+                    out.append(ev)
+            except Exception:
+                out.append(ev)
+        return out
     
     def _generate_chord_accompaniment(self, events: List[Dict[str, Any]], key_mapping: Dict[str, str], strategy_name: Optional[str]) -> List[Dict[str, Any]]:
         """根据已映射旋律事件，调用新版 ChordEngine 生成与主音节奏对齐的和弦伴奏。"""
@@ -1188,7 +1405,18 @@ class AutoPlayer:
                         break
                 return keys
 
-            # 遍历事件，按“音对”替代：仅当 t 处存在 >=2 个和弦键
+            # 检查是否启用和弦替代主音功能
+            chord_replace_melody = self.options.get('chord_replace_melody', False)
+            
+            if not chord_replace_melody:
+                # 不替代主音，直接返回原事件加上和弦伴奏
+                out = list(events)
+                for ev in accomp:
+                    out.append(ev)
+                out.sort(key=lambda x: (float(x.get('start_time', 0.0)), 0 if x.get('type')=='note_off' else 1))
+                return out
+            
+            # 启用替代功能：遍历事件，按"音对"替代：仅当 t 处存在 >=1 个和弦键
             out: List[Dict[str, Any]] = []
             # 记录每个 (note, channel) 的起始时间及是否替代与和弦键列表
             note_on_stack: Dict[Tuple[int, int], List[float]] = {}
@@ -1202,8 +1430,7 @@ class AutoPlayer:
                     st = float(ev.get('start_time', 0.0))
                     note_on_stack.setdefault((note, ch), []).append(st)
                     chord_keys = find_keys_at(st)
-                    if len(chord_keys) >= 2:
-                        # 只替代“触发和弦组合”的音
+                    if len(chord_keys) >= 1:  # 只要有和弦键就替代
                         replaced_meta[(note, ch, st)] = chord_keys
             # 清空临时栈，用于第二遍成对处理
             note_on_stack.clear()

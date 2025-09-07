@@ -5,13 +5,14 @@ import tkinter as tk
 from tkinter import ttk
 from meowauto.midi import groups  # 复用原有分组数据
 
-def create_right_pane(controller, parent_right, *, show_midi_parse: bool = True, show_events: bool = True, show_logs: bool = True):
+def create_right_pane_component(controller, parent_right, *, show_midi_parse: bool = True, show_events: bool = True, show_logs: bool = True, instrument: str = None):
     """右侧分页：可配置显示 MIDI解析设置 / 事件表 / 系统日志
 
     参数：
     - show_midi_parse: 是否显示“解析当前MIDI”按钮与“MIDI解析设置”页签
     - show_events: 是否显示“事件表”页签
     - show_logs: 是否显示“系统日志”页签
+    - instrument: 乐器类型（可选）
     """
     # 顶部工具条：解析按钮（可选）
     top_toolbar = ttk.Frame(parent_right)
@@ -38,36 +39,18 @@ def create_right_pane(controller, parent_right, *, show_midi_parse: bool = True,
     if tab_logs is not None:
         notebook.add(tab_logs, text="系统日志")
 
-    # ========== 设置页（可滚动），仅暴露 analyzer 支持的设置 ==========
+    # ========== 设置页（受主页面滚动条控制），仅暴露 analyzer 支持的设置 ==========
     if tab_settings is not None:
-        settings_canvas = tk.Canvas(tab_settings, highlightthickness=0)
-        settings_scrollbar = ttk.Scrollbar(tab_settings, orient=tk.VERTICAL, command=settings_canvas.yview)
-        settings_inner = ttk.Frame(settings_canvas)
-        settings_inner.bind("<Configure>", lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all")))
-        settings_canvas.create_window((0, 0), window=settings_inner, anchor="nw")
-        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
-        settings_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        settings_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        settings_inner = ttk.Frame(tab_settings)
+        settings_inner.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-    # 1) 音高分组筛选（与 meowauto.midi.groups 对接）
+    # 1) 音高分组选择功能已移除，初始化默认值
     if tab_settings is not None:
-        grp_frame = ttk.LabelFrame(settings_inner, text="音高分组选择", padding="8")
-        grp_frame.pack(fill=tk.X, padx=6, pady=6)
         controller.pitch_group_vars = {}
-        row = 0
-        col = 0
+        # 为所有分组设置默认值为 True（全选）
         for name in groups.ORDERED_GROUP_NAMES:
             var = tk.BooleanVar(value=True)
             controller.pitch_group_vars[name] = var
-            ttk.Checkbutton(grp_frame, text=name, variable=var).grid(row=row, column=col, sticky=tk.W, padx=4, pady=2)
-            col += 1
-            if col % 2 == 0:
-                row += 1
-                col = 0
-        btns = ttk.Frame(grp_frame)
-        btns.grid(row=row+1, column=0, columnspan=2, sticky=tk.W)
-        ttk.Button(btns, text="全选", command=lambda: [v.set(True) for v in controller.pitch_group_vars.values()]).pack(side=tk.LEFT, padx=(0,6))
-        ttk.Button(btns, text="全不选", command=lambda: [v.set(False) for v in controller.pitch_group_vars.values()]).pack(side=tk.LEFT)
 
     # 2) 主旋律提取（与 analyzer.extract_melody 参数对接）
     if tab_settings is not None:
@@ -132,32 +115,60 @@ def create_right_pane(controller, parent_right, *, show_midi_parse: bool = True,
         for i in range(4):
             post_frame.columnconfigure(i, weight=1)
 
-    # 5) 和弦标注（仅用于事件表标注，不影响回放）
+    # 5) 和弦标注功能已移除，避免混淆
     if tab_settings is not None:
-        chord_frame = ttk.LabelFrame(settings_inner, text="和弦标注（事件表）", padding="8")
-        chord_frame.pack(fill=tk.X, padx=6, pady=6)
+        # 为所有乐器设置默认禁用值
         controller.enable_chord_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(chord_frame, text="检测同窗≥2音并标注声部数", variable=controller.enable_chord_var).pack(anchor=tk.W, padx=4)
 
-    # 6) 回放 · 和弦伴奏（下发至 AutoPlayer）。注意：黑键移调仅在“后处理”中提供。
-    if tab_settings is not None:
+    # 6) 回放 · 和弦伴奏（下发至 AutoPlayer）。注意：黑键移调仅在"后处理"中提供。
+    # 仅架子鼓禁用和弦功能；其他乐器可用
+    current_instrument = (instrument or '').strip()
+    show_chord_accomp = current_instrument not in ('架子鼓',)
+    if tab_settings is not None and show_chord_accomp:
         play_frame = ttk.LabelFrame(settings_inner, text="回放 · 和弦伴奏", padding="8")
         play_frame.pack(fill=tk.X, padx=6, pady=6)
         # 和弦伴奏
         controller.enable_chord_accomp_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(play_frame, text="启用和弦伴奏", variable=controller.enable_chord_accomp_var).grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
-        ttk.Label(play_frame, text="伴奏模式:").grid(row=0, column=1, sticky=tk.E, padx=(12,4))
-        controller.chord_accomp_mode_var = tk.StringVar(value='triad')
-        ttk.Combobox(play_frame, textvariable=controller.chord_accomp_mode_var, state='readonly', width=10,
-                     values=['triad','triad7','greedy']).grid(row=0, column=2, sticky=tk.W)
-        ttk.Label(play_frame, text="伴奏最短持续(ms):").grid(row=1, column=1, sticky=tk.E, padx=(12,4))
-        controller.chord_accomp_min_sustain_var = tk.IntVar(value=120)
-        ttk.Spinbox(play_frame, from_=30, to=1000, increment=10, width=10, textvariable=controller.chord_accomp_min_sustain_var).grid(row=1, column=2, sticky=tk.W)
-        # 新增：用和弦键替代主音键（去根音）
+        ttk.Label(play_frame, text="和弦最短持续(ms):").grid(row=1, column=1, sticky=tk.E, padx=(12,4))
+        controller.chord_min_sustain_ms_var = tk.IntVar(value=1500)
+        ttk.Spinbox(play_frame, from_=100, to=5000, increment=50, width=10, textvariable=controller.chord_min_sustain_ms_var).grid(row=1, column=2, sticky=tk.W)
+        ttk.Label(play_frame, text="块和弦窗口(ms):").grid(row=2, column=2, sticky=tk.E, padx=(12,4))
+        controller.chord_block_window_ms_var = tk.IntVar(value=50)
+        ttk.Spinbox(play_frame, from_=0, to=200, increment=5, width=10, textvariable=controller.chord_block_window_ms_var).grid(row=2, column=3, sticky=tk.W)
         controller.chord_replace_melody_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(play_frame, text="用和弦键替代主音键（去根音）", variable=controller.chord_replace_melody_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
-        for i in range(3):
+        for i in range(4):
             play_frame.columnconfigure(i, weight=1)
+
+    # 7) 回放 · 多键/防重触发（仅非架子鼓显示；默认“原版风格”）
+    show_multi_key = current_instrument not in ('架子鼓',)
+    if tab_settings is not None and show_multi_key:
+        mk_frame = ttk.LabelFrame(settings_inner, text="回放 · 多键/防重触发", padding="8")
+        mk_frame.pack(fill=tk.X, padx=6, pady=6)
+        ttk.Label(mk_frame, text="短窗多键处理:").grid(row=0, column=0, sticky=tk.W, padx=4)
+        controller.multi_key_mode_var = tk.StringVar(value='原样')
+        ttk.Combobox(mk_frame, textvariable=controller.multi_key_mode_var, state='readonly', width=10,
+                     values=['原样','合并(块和弦)','琶音']).grid(row=0, column=1, sticky=tk.W)
+        ttk.Label(mk_frame, text="短窗宽度(ms):").grid(row=0, column=2, sticky=tk.E, padx=(12,4))
+        controller.multi_key_window_var = tk.IntVar(value=50)
+        ttk.Spinbox(mk_frame, from_=0, to=200, increment=5, width=10, textvariable=controller.multi_key_window_var).grid(row=0, column=3, sticky=tk.W)
+
+        controller.anti_retrigger_enable_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(mk_frame, text="跨分部防重触发", variable=controller.anti_retrigger_enable_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
+        ttk.Label(mk_frame, text="防重触发窗口(ms):").grid(row=1, column=2, sticky=tk.E, padx=(12,4))
+        controller.anti_retrigger_window_var = tk.IntVar(value=30)
+        ttk.Spinbox(mk_frame, from_=0, to=200, increment=5, width=10, textvariable=controller.anti_retrigger_window_var).grid(row=1, column=3, sticky=tk.W)
+
+        for i in range(4):
+            mk_frame.columnconfigure(i, weight=1)
+        ttk.Checkbutton(play_frame, text="用和弦键替代主音键（去根音）", variable=controller.chord_replace_melody_var).grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
+        # 块和弦窗口控件已在上方创建，这里仅保留引用
+    elif tab_settings is not None and not show_chord_accomp:
+        # 为贝斯和架子鼓设置默认值（禁用和弦）
+        controller.chord_min_sustain_ms_var = tk.IntVar(value=1500)
+        controller.chord_replace_melody_var = tk.BooleanVar(value=False)
+        controller.chord_block_window_ms_var = tk.IntVar(value=50)
 
     # 当上述与 AutoPlayer 相关变量变化时，实时应用
     def _apply_player_opts_on_change(*_):
@@ -170,14 +181,25 @@ def create_right_pane(controller, parent_right, *, show_midi_parse: bool = True,
     if tab_settings is not None:
         for v in (
             controller.enable_chord_accomp_var,
-            controller.chord_accomp_mode_var,
-            controller.chord_accomp_min_sustain_var,
+            controller.chord_min_sustain_ms_var,
             controller.chord_replace_melody_var,
+            controller.chord_block_window_ms_var,
         ):
             try:
                 v.trace_add('write', _apply_player_opts_on_change)
             except Exception:
                 pass
+        if show_multi_key:
+            for v in (
+                controller.multi_key_mode_var,
+                controller.multi_key_window_var,
+                controller.anti_retrigger_enable_var,
+                controller.anti_retrigger_window_var,
+            ):
+                try:
+                    v.trace_add('write', _apply_player_opts_on_change)
+                except Exception:
+                    pass
 
     # ========== 事件表 ==========
     if tab_events is not None:

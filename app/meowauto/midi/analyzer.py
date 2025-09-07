@@ -12,113 +12,61 @@ from .groups import filter_notes_by_groups, group_for_note
 
 
 def _gather_notes(mid) -> List[Dict[str, Any]]:
-    ticks_per_beat = getattr(mid, 'ticks_per_beat', 480)
-    tempo = 500000  # default 120 BPM
-    # 以绝对tick记录的tempo变化 (tick, tempo_us_per_beat)
-    tempo_changes: List[Tuple[int, int]] = [(0, tempo)]
-    # accumulate absolute time per track to the merged view
+    """使用mido原生时间转换收集音符事件"""
     events: List[Dict[str, Any]] = []
-
-    for i, track in enumerate(mid.tracks):
-        t = 0
-        on_stack = {}
-        cur_tempo = tempo
+    note_states = {}  # 跟踪note_on状态
+    
+    # 遍历所有轨道，使用mido的自动时间转换
+    for track_idx, track in enumerate(mid.tracks):
+        absolute_time = 0
         for msg in track:
-            t += msg.time
-            if msg.type == 'set_tempo':
-                cur_tempo = msg.tempo
-                tempo_changes.append((int(t), int(cur_tempo)))
+            absolute_time += msg.time  # mido自动处理tick到秒的转换
+            
             if msg.type == 'note_on' and msg.velocity > 0:
-                on_stack.setdefault((msg.channel, msg.note), []).append((t, msg.velocity))
-            elif msg.type in ('note_off', 'note_on'):
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    continue
-                key = (msg.channel, msg.note)
-                if key in on_stack and on_stack[key]:
-                    start_tick, vel = on_stack[key].pop(0)
+                # 记录note_on
+                note_key = (msg.channel, msg.note)
+                note_states[note_key] = {
+                    'start_time': absolute_time,
+                    'velocity': msg.velocity,
+                    'track': track_idx
+                }
+            
+            elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                # 处理note_off，创建完整的音符事件
+                note_key = (msg.channel, msg.note)
+                if note_key in note_states:
+                    note_info = note_states.pop(note_key)
+                    
                     events.append({
-                        'start_tick': start_tick,
-                        'end_tick': t,
-                        'channel': msg.channel,
+                        'start_time': note_info['start_time'],
+                        'end_time': absolute_time,
+                        'duration': absolute_time - note_info['start_time'],
                         'note': msg.note,
-                        'velocity': vel,
+                        'velocity': note_info['velocity'],
+                        'channel': msg.channel,
+                        'track': note_info['track']
                     })
-    # 转换为精确时间：基于 tempo_changes 分段积分（PPQ），SMPTE 简化为常量换算
-    if not events:
-        return []
-
-    # 统一排序并去除同tick重复，仅保留最后一次tempo（同tick后者覆盖前者）
-    tempo_changes_sorted = sorted(tempo_changes, key=lambda x: int(x[0]))
-    dedup: List[Tuple[int, int]] = []
-    for tk, tp in tempo_changes_sorted:
-        if not dedup or int(tk) != int(dedup[-1][0]):
-            dedup.append((int(tk), int(tp)))
-        else:
-            dedup[-1] = (int(tk), int(tp))
-    tempo_changes = dedup if dedup else [(0, tempo)]
-
-    def tick_to_seconds_ppq(target_tick: int) -> float:
-        if target_tick <= 0:
-            return 0.0
-        acc = 0.0
-        prev_tick = 0
-        prev_tempo = tempo_changes[0][1]
-        for i in range(1, len(tempo_changes)):
-            cur_tick, cur_tempo = tempo_changes[i]
-            if cur_tick > target_tick:
-                break
-            dt = max(0, cur_tick - prev_tick)
-            acc += (dt * prev_tempo) / (ticks_per_beat * 1_000_000.0)
-            prev_tick = cur_tick
-            prev_tempo = cur_tempo
-        # tail
-        dt_tail = max(0, int(target_tick) - int(prev_tick))
-        acc += (dt_tail * prev_tempo) / (ticks_per_beat * 1_000_000.0)
-        return acc
-
-    is_smpte = bool(ticks_per_beat < 0)
-    # SMPTE: 这里暂不从 division 拆解fps和ticks_per_frame，后续如需可与 auto_player 统一实现
-    # 先按近似：若为SMPTE，尝试使用 mido.MidiFile.length 比例映射（保持相对位置），否则退化为PPQ路径
-    mf_len = 0.0
-    try:
-        mf_len = float(getattr(mid, 'length', 0.0) or 0.0)
-    except Exception:
-        mf_len = 0.0
-
-    if not is_smpte:
-        for e in events:
-            st = tick_to_seconds_ppq(int(e['start_tick']))
-            et = tick_to_seconds_ppq(int(e['end_tick']))
-            e['start_time'] = st
-            e['end_time'] = max(et, st)
-            e['duration'] = max(0.0, e['end_time'] - e['start_time'])
-            e['group'] = group_for_note(e['note'])
-    else:
-        # 近似：按ticks线性映射到mido.length（若可用），保持事件相对位置
-        max_tick = 0
-        try:
-            max_tick = max(int(e['end_tick']) for e in events)
-        except Exception:
-            max_tick = 0
-        scale = (mf_len / max_tick) if (mf_len > 0.0 and max_tick > 0) else 0.0
-        if scale <= 0.0:
-            # 无法近似时退化为默认120BPM（尽量避免抖动）
-            for e in events:
-                st = (int(e['start_tick']) * tempo) / (ticks_per_beat * 1_000_000.0)
-                et = (int(e['end_tick']) * tempo) / (ticks_per_beat * 1_000_000.0)
-                e['start_time'] = st
-                e['end_time'] = max(et, st)
-                e['duration'] = max(0.0, e['end_time'] - e['start_time'])
-                e['group'] = group_for_note(e['note'])
-        else:
-            for e in events:
-                st = int(e['start_tick']) * scale
-                et = int(e['end_tick']) * scale
-                e['start_time'] = st
-                e['end_time'] = max(et, st)
-                e['duration'] = max(0.0, e['end_time'] - e['start_time'])
-                e['group'] = group_for_note(e['note'])
-    # expand to note_on/off style for event table if needed by caller
+    
+    # 处理未结束的note_on（文件结尾）
+    for note_key, note_info in note_states.items():
+        end_time = mid.length  # 使用文件总长度
+        events.append({
+            'start_time': note_info['start_time'],
+            'end_time': end_time,
+            'duration': end_time - note_info['start_time'],
+            'note': note_key[1],
+            'velocity': note_info['velocity'],
+            'channel': note_key[0],
+            'track': note_info['track']
+        })
+    
+    # 添加音符分组信息
+    for e in events:
+        e['group'] = group_for_note(e['note'])
+    
+    # 按时间排序
+    events.sort(key=lambda x: x['start_time'])
+    
     return events
 
 

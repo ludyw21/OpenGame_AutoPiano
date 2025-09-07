@@ -3,60 +3,27 @@
 """
 Audio conversion module for MeowField AutoPiano.
 
-This module handles audio to MIDI conversion using various methods including
-PianoTrans and custom converters.
+This module provides a thin wrapper over the unified entry in
+`meowauto.audio.audio2midi.convert_audio_to_midi`.
+"""
+"""
+署名与声明：
+by薮薮猫猫
+本软件开源且免费，如果你是付费购买请申请退款，并从官方渠道获取。
 """
 
 import os
-import subprocess
 import threading
 from typing import List, Callable, Optional, Dict, Any
 from ..core import Logger
 
 
 class AudioConverter:
-    """音频转换器，支持多种转换方法"""
+    """音频转换器（统一入口封装）"""
     
     def __init__(self, logger: Logger):
         self.logger = logger
         self.supported_formats = ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg']
-        
-        # 初始化转换器
-        self.new_converter = None
-        self.pianotrans_config = None
-        self._init_converters()
-    
-    def _init_converters(self):
-        """初始化各种转换器"""
-        # 尝试导入新的音频转换器
-        try:
-            import sys
-            import os
-            # Add the parent directory to sys.path to import from root
-            parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-            
-            from audio_to_midi_converter import AudioToMidiConverter
-            self.new_converter = AudioToMidiConverter(self.logger.log)
-            self.logger.log("新音频转换器已加载", "SUCCESS")
-        except ImportError as e:
-            self.logger.log(f"新音频转换器未加载: {str(e)}", "WARNING")
-        
-        # 尝试导入PianoTrans配置器
-        try:
-            import sys
-            import os
-            # Add the parent directory to sys.path to import from root
-            parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-            
-            from pianotrans_config import PianoTransConfig
-            self.pianotrans_config = PianoTransConfig(self.logger.log)
-            self.logger.log("PianoTrans配置器已加载", "SUCCESS")
-        except ImportError as e:
-            self.logger.log(f"PianoTrans配置器未加载: {str(e)}", "WARNING")
     
     def convert_audio_to_midi(self, audio_path: str, output_path: str = None) -> bool:
         """转换音频文件到MIDI"""
@@ -69,13 +36,27 @@ class AudioConverter:
             output_name = os.path.splitext(os.path.basename(audio_path))[0]
             output_path = os.path.join(output_dir, f"{output_name}.mid")
         
-        # 选择转换策略
-        if self._should_use_new_converter():
-            return self._convert_with_new_converter(audio_path, output_path)
-        elif self.pianotrans_config:
-            return self._convert_with_pianotrans_config(audio_path, output_path)
+        # 统一通过 meowauto.audio.audio2midi 执行
+        try:
+            from .audio2midi import convert_audio_to_midi
+        except Exception as e:
+            self.logger.error(f"加载统一转换入口失败: {e}")
+            return False
+
+        ok, outp, err, logs = convert_audio_to_midi(audio_path, output_path)
+        if logs.get('stdout'):
+            self.logger.log(f"PianoTrans输出: {logs['stdout']}", "INFO")
+        if logs.get('stderr'):
+            # 可能包含校验警告，不一定是失败
+            self.logger.log(f"PianoTrans错误/警告: {logs['stderr']}", "WARNING")
+        if logs.get('elapsed'):
+            self.logger.log(f"转换耗时: {logs['elapsed']:.1f}s", "INFO")
+        if ok and outp and os.path.exists(outp):
+            self.logger.log(f"转换成功: {outp}", "SUCCESS")
+            return True
         else:
-            return self._convert_with_traditional_method(audio_path, output_path)
+            self.logger.error(f"转换失败: {err or '未知错误'}")
+            return False
     
     def convert_audio_to_midi_async(self, audio_path: str, output_path: str, 
                                   progress_callback: Callable = None, 
@@ -154,153 +135,11 @@ class AudioConverter:
         self.logger.log(f"批量转换完成: {success_count}/{len(audio_files)} 成功", "SUCCESS")
         return result
     
-    def _should_use_new_converter(self) -> bool:
-        """判断是否应该使用新转换器"""
-        if not self.new_converter:
-            return False
-        
-        try:
-            script_path = self.new_converter.find_pianotrans_python()
-            return script_path and os.path.exists(script_path)
-        except Exception:
-            return False
-    
-    def _convert_with_new_converter(self, audio_path: str, output_path: str) -> bool:
-        """使用新的音频转换器"""
-        try:
-            self.logger.log("使用新的音频转换器...", "INFO")
-            
-            def progress_callback(message):
-                self.logger.log(f"转换进度: {message}", "INFO")
-            
-            def complete_callback(success, output_path):
-                if success:
-                    self.logger.log(f"新转换器转换成功: {output_path}", "SUCCESS")
-                else:
-                    self.logger.log("新转换器转换失败", "ERROR")
-            
-            self.new_converter.convert_audio_to_midi_async(
-                audio_path, 
-                output_path, 
-                progress_callback, 
-                complete_callback
-            )
-            return True
-        except Exception as e:
-            self.logger.error(f"新转换器转换失败: {str(e)}")
-            return False
-    
-    def _convert_with_pianotrans_config(self, audio_path: str, output_path: str) -> bool:
-        """使用PianoTrans配置方法"""
-        try:
-            self.logger.log("使用PianoTrans配置方法...", "INFO")
-            
-            def progress_callback(message):
-                self.logger.log(f"转换进度: {message}", "INFO")
-            
-            def complete_callback(success, output_path):
-                if success:
-                    self.logger.log(f"PianoTrans配置转换成功: {output_path}", "SUCCESS")
-                else:
-                    self.logger.log("PianoTrans配置转换失败", "ERROR")
-            
-            self.pianotrans_config.convert_audio_to_midi_async(
-                audio_path, 
-                output_path, 
-                progress_callback, 
-                complete_callback
-            )
-            return True
-        except Exception as e:
-            self.logger.error(f"PianoTrans配置转换失败: {str(e)}")
-            return False
-    
-    def _convert_with_traditional_method(self, audio_path: str, output_path: str) -> bool:
-        """使用传统PianoTrans方法"""
-        try:
-            self.logger.log("使用传统PianoTrans方法...", "INFO")
-            
-            # 查找PianoTrans.exe
-            piano_trans_path = self._find_pianotrans_exe()
-            if not piano_trans_path:
-                self.logger.error("找不到PianoTrans.exe")
-                return False
-            
-            # 执行转换
-            cmd = [piano_trans_path, audio_path]
-            working_dir = os.path.dirname(piano_trans_path)
-            
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=False,
-                cwd=working_dir, 
-                timeout=600,
-            )
-            
-            # 处理输出
-            stdout = result.stdout.decode('utf-8', errors='ignore') if result.stdout else ""
-            stderr = result.stderr.decode('utf-8', errors='ignore') if result.stderr else ""
-            
-            # 解析输出文件路径
-            actual_output = self._parse_pianotrans_output(stdout, audio_path)
-            
-            # 重命名输出文件
-            if actual_output and os.path.exists(actual_output) and actual_output != output_path:
-                try:
-                    os.replace(actual_output, output_path)
-                except Exception as e:
-                    self.logger.error(f"重命名输出文件失败: {str(e)}")
-                    return False
-            
-            if os.path.exists(output_path):
-                self.logger.log(f"传统方法转换成功: {output_path}", "SUCCESS")
-                return True
-            else:
-                error_detail = stderr if stderr else stdout
-                self.logger.error(f"传统方法转换失败: {error_detail}")
-                return False
-                
-        except subprocess.TimeoutExpired:
-            self.logger.error("转换超时")
-            return False
-        except Exception as e:
-            self.logger.error(f"传统方法转换失败: {str(e)}")
-            return False
-    
-    def _find_pianotrans_exe(self) -> Optional[str]:
-        """查找PianoTrans.exe文件"""
-        possible_paths = [
-            os.path.join("PianoTrans-v1.0", "PianoTrans.exe"),
-            "PianoTrans-v1.0/PianoTrans.exe",
-            "PianoTrans.exe"
-        ]
-        
-        for path in possible_paths:
-            if os.path.exists(path):
-                return path
-        
-        return None
-    
-    def _parse_pianotrans_output(self, stdout: str, audio_path: str) -> Optional[str]:
-        """解析PianoTrans输出，获取实际输出文件路径"""
-        # 查找输出路径
-        for line in stdout.splitlines():
-            if 'Write out to ' in line:
-                return line.split('Write out to ', 1)[-1].strip()
-        
-        # 默认输出路径
-        guess_out = audio_path + ".mid"
-        if os.path.exists(guess_out):
-            return guess_out
-        
-        return None
-    
     def get_supported_formats(self) -> List[str]:
         """获取支持的音频格式"""
         return self.supported_formats.copy()
-    
+
     def is_format_supported(self, file_path: str) -> bool:
         """检查文件格式是否支持"""
         ext = os.path.splitext(file_path)[1].lower()
-        return ext in self.supported_formats 
+        return ext in self.supported_formats

@@ -32,14 +32,18 @@ from pages.ensemble import EnsemblePage
 # 瘦身：组件化UI构建
 from pages.components import file_select as comp_file_select
 from pages.components import playback_controls as comp_playback
-from pages.components import right_pane as comp_right
+# 右侧面板入口已合并至左侧分页；保留占位以兼容旧代码，不再实际使用
+try:
+    from pages.components import right_pane as comp_right  # noqa: F401
+except Exception:
+    comp_right = None
 from pages.components import bottom_progress as comp_bottom
 # 新增：乐器板块页面 与 工具页面
 try:
     from pages.instruments.epiano import EPianoPage  # type: ignore
     from pages.instruments.guitar import GuitarPage  # type: ignore
     from pages.instruments.bass import BassPage  # type: ignore
-    from pages.instruments.drums import DrumsPage  # type: ignore
+    from pages.instruments.drums_new import DrumsPage  # type: ignore
 except Exception:
     EPianoPage = GuitarPage = BassPage = DrumsPage = None  # type: ignore
 try:
@@ -78,6 +82,11 @@ class MeowFieldAutoPiano:
         self.root.title("MeowField自动演奏程序")
         self.root.geometry("1600x980")
         self.root.resizable(True, True)
+        # 尝试启用整窗毛玻璃（Acrylic）效果（Windows 10+）
+        try:
+            self._enable_acrylic()
+        except Exception:
+            pass
         
         # 设置窗口图标（如果存在）
         self._set_window_icon()
@@ -183,6 +192,11 @@ class MeowFieldAutoPiano:
             self.current_instrument = '电子琴'
             if getattr(self, 'router', None):
                 self.router.show('inst:epiano', title=f"{self.current_instrument}")
+            try:
+                if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'set_active'):
+                    self.sidebar.set_active('inst-epiano')
+            except Exception:
+                pass
         except Exception:
             pass
         # 发布系统就绪事件
@@ -196,6 +210,8 @@ class MeowFieldAutoPiano:
         self._startup_protect = True
         # 仅调试期：默认不允许关闭，需显式授权（Ctrl+Q 或确认对话框）
         self._allow_close = False
+        # UI 调试输出开关（默认关闭，避免大量 [DEBUG] 噪声）
+        self._ui_debug = False
         try:
             self.root.after(1000, lambda: setattr(self, '_startup_protect', False))
         except Exception:
@@ -230,6 +246,83 @@ class MeowFieldAutoPiano:
         self._last_split_parts = {}
         # 分部选择：记录用户在弹窗中勾选的分部名称集合
         self._selected_part_names = set()
+
+    def _enable_acrylic(self):
+        """启用整窗毛玻璃效果（Acrylic）。仅在 Windows 上有效，失败则静默忽略。"""
+        try:
+            import ctypes
+            import platform
+            if platform.system() != 'Windows':
+                return
+            user32 = ctypes.windll.user32
+            hwnd = self.root.winfo_id()
+            # 定义结构体
+            class ACCENTPOLICY(ctypes.Structure):
+                _fields_ = [("AccentState", ctypes.c_int),
+                            ("AccentFlags", ctypes.c_int),
+                            ("GradientColor", ctypes.c_uint32),
+                            ("AnimationId", ctypes.c_int)]
+
+            class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
+                _fields_ = [("Attribute", ctypes.c_int),
+                            ("Data", ctypes.c_void_p),
+                            ("SizeOfData", ctypes.c_size_t)]
+
+            # 常量
+            WCA_ACCENT_POLICY = 19
+            ACCENT_ENABLE_ACRYLICBLURBEHIND = 4  # Acrylic（需要 Windows 10 RS4+）
+            ACCENT_ENABLE_BLURBEHIND = 3
+
+            # 颜色：0xAABBGGRR，使用 Win11 蓝白系的半透明白（略带蓝）
+            # 例如 alpha=0xCC，颜色 #F8FAFF（接近白、偏蓝）：0xCCFFFAF8（注意顺序 BBGGRR）
+            alpha = 0xCC
+            bb = 0xFF  # B
+            gg = 0xFA  # G
+            rr = 0xF8  # R
+            gradient_color = (alpha << 24) | (bb << 16) | (gg << 8) | rr
+
+            accent = ACCENTPOLICY()
+            accent.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND
+            accent.AccentFlags = 0  # 可选：0x20 开启淡入淡出
+            accent.GradientColor = ctypes.c_uint32(gradient_color)
+            accent.AnimationId = 0
+
+            data = WINDOWCOMPOSITIONATTRIBDATA()
+            data.Attribute = WCA_ACCENT_POLICY
+            data.Data = ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p)
+            data.SizeOfData = ctypes.sizeof(accent)
+
+            # 调用 API
+            _SetWindowCompositionAttribute = ctypes.windll.user32.SetWindowCompositionAttribute
+            _SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
+        except Exception:
+            # 回退：尝试普通模糊
+            try:
+                import ctypes
+                class ACCENTPOLICY(ctypes.Structure):
+                    _fields_ = [("AccentState", ctypes.c_int),
+                                ("AccentFlags", ctypes.c_int),
+                                ("GradientColor", ctypes.c_uint32),
+                                ("AnimationId", ctypes.c_int)]
+                class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
+                    _fields_ = [("Attribute", ctypes.c_int),
+                                ("Data", ctypes.c_void_p),
+                                ("SizeOfData", ctypes.c_size_t)]
+                WCA_ACCENT_POLICY = 19
+                ACCENT_ENABLE_BLURBEHIND = 3
+                accent = ACCENTPOLICY()
+                accent.AccentState = ACCENT_ENABLE_BLURBEHIND
+                accent.AccentFlags = 0
+                accent.GradientColor = 0
+                accent.AnimationId = 0
+                data = WINDOWCOMPOSITIONATTRIBDATA()
+                data.Attribute = WCA_ACCENT_POLICY
+                data.Data = ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p)
+                data.SizeOfData = ctypes.sizeof(accent)
+                hwnd = self.root.winfo_id()
+                ctypes.windll.user32.SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
+            except Exception:
+                pass
     
     def _set_window_icon(self):
         """设置窗口图标"""
@@ -496,6 +589,11 @@ class MeowFieldAutoPiano:
                     if getattr(self, 'router', None):
                         self.router.show('inst:epiano', title=title)
                     self.ui_manager.set_status('已切换至电子琴板块')
+                    try:
+                        if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'set_active'):
+                            self.sidebar.set_active('inst-epiano')
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 return
@@ -506,6 +604,11 @@ class MeowFieldAutoPiano:
                     if getattr(self, 'router', None):
                         self.router.show('inst:guitar', title=title)
                     self.ui_manager.set_status('已切换至吉他板块')
+                    try:
+                        if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'set_active'):
+                            self.sidebar.set_active('inst-guitar')
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 return
@@ -516,6 +619,11 @@ class MeowFieldAutoPiano:
                     if getattr(self, 'router', None):
                         self.router.show('inst:bass', title=title)
                     self.ui_manager.set_status('已切换至贝斯板块（占位）')
+                    try:
+                        if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'set_active'):
+                            self.sidebar.set_active('inst-bass')
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 return
@@ -526,6 +634,11 @@ class MeowFieldAutoPiano:
                     if getattr(self, 'router', None):
                         self.router.show('inst:drums', title=title)
                     self.ui_manager.set_status('已切换至架子鼓板块')
+                    try:
+                        if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'set_active'):
+                            self.sidebar.set_active('inst-drums')
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 return
@@ -534,13 +647,217 @@ class MeowFieldAutoPiano:
                     if getattr(self, 'router', None):
                         self.router.show('tool:audio2midi', title="音频转MIDI")
                     self.ui_manager.set_status('已切换至 音频转MIDI 工具')
+                    try:
+                        if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'set_active'):
+                            self.sidebar.set_active('tool-audio2midi')
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 return
         except Exception:
             pass
 
-    # 已移除：关于窗口与游戏切换等页面功能
+    def _ui_parts_auto_select_by_channel(self):
+        """仅根据通道自动勾选：
+        - 若 MIDI 为单轨道：全选
+        - 架子鼓：选择 channel==9 的分部
+        - 其他乐器：优先按 GM Program 家族（若有）筛选；否则选择 channel!=9 的分部
+        - 若无匹配：全选
+        """
+        try:
+            tree = getattr(self, '_parts_tree', None)
+            if tree is None:
+                return
+            midi_path = getattr(self, 'midi_path_var', None).get() if hasattr(self, 'midi_path_var') else ''
+            single_track = False
+            try:
+                if midi_path and os.path.exists(midi_path):
+                    res = analyzer.parse_midi(midi_path)
+                    if res.get('ok') and isinstance(res.get('tracks'), list):
+                        single_track = (len(res.get('tracks') or []) <= 1)
+            except Exception:
+                single_track = False
+            if single_track:
+                self._ui_parts_select_all()
+                return
+            # 遍历 tree，根据 _last_split_parts 的 meta.channel 进行匹配
+            parts = getattr(self, '_last_split_parts', {}) or {}
+            selected = 0
+            self._parts_checked = {}
+
+            # GM Program 家族范围（0-based）：
+            # 参考：https://www.midi.org/specifications-old/item/gm-level-1-sound-set
+            gm_families = {
+                'piano': list(range(0, 8)),          # Acoustic/Electric Pianos 0-7
+                'guitar': list(range(24, 32)),       # 24-31
+                'bass': list(range(32, 40)),         # 32-39
+                'strings': list(range(40, 48)),      # 40-47
+            }
+            inst = getattr(self, 'current_instrument', '')
+            prefer_programs = None
+            if inst == '电子琴':
+                prefer_programs = set(gm_families['piano'])
+            elif inst == '吉他':
+                prefer_programs = set(gm_families['guitar'])
+            elif inst == '贝斯':
+                prefer_programs = set(gm_families['bass'])
+            else:
+                prefer_programs = None
+
+            for iid in tree.get_children():
+                # 读取分部名称与元信息
+                vals = list(tree.item(iid, 'values'))
+                if not vals or len(vals) < 2:
+                    continue
+                name = vals[1]
+                sec = parts.get(name)
+                chan = None
+                program = None
+                notes = []
+                try:
+                    if isinstance(sec, dict):
+                        meta = sec.get('meta', {}) or {}
+                        chan = meta.get('channel', None)
+                        program = meta.get('program', None)
+                        notes = sec.get('notes', [])
+                    else:
+                        meta = getattr(sec, 'meta', {}) or {}
+                        chan = meta.get('channel', None)
+                        program = meta.get('program', None)
+                        notes = getattr(sec, 'notes', []) or []
+                except Exception:
+                    pass
+                # 缺失时从事件推断主通道/主Program
+                if (chan is None or program is None) and notes:
+                    try:
+                        from collections import Counter
+                        chs = [int(ev.get('channel')) for ev in notes if isinstance(ev, dict) and ev.get('type') in ('note_on','note_off') and ev.get('channel') is not None]
+                        progs = [int(ev.get('program')) for ev in notes if isinstance(ev, dict) and ev.get('type') in ('note_on','note_off') and ev.get('program') is not None]
+                        if chan is None and chs:
+                            chan = Counter(chs).most_common(1)[0][0]
+                        if program is None and progs:
+                            program = Counter(progs).most_common(1)[0][0]
+                    except Exception:
+                        pass
+                # 命中判断
+                hit = False
+                if chan is not None:
+                    if inst == '架子鼓':
+                        hit = (int(chan) == 9)
+                    else:
+                        if prefer_programs is not None and program is not None:
+                            try:
+                                hit = (int(chan) != 9) and (int(program) in prefer_programs)
+                            except Exception:
+                                hit = (int(chan) != 9)
+                        else:
+                            hit = (int(chan) != 9)
+                # 应用到 Tree 与缓存
+                self._parts_checked[name] = bool(hit)
+                vals[0] = '☑' if hit else '☐'
+                tree.item(iid, values=vals)
+                if hit:
+                    selected += 1
+            if selected == 0:
+                # 无匹配则全选
+                self._ui_parts_select_all()
+        except Exception:
+            # 异常兜底：全选
+            try:
+                self._ui_parts_select_all()
+            except Exception:
+                pass
+
+    def _ui_parts_auto_select_by_instrument_cluster(self) -> bool:
+        """在“智能聚类”模式下，仅选择与当前乐器匹配的分部。
+        返回是否至少命中一个分部。规则：
+        - 架子鼓：channel==9
+        - 电子琴：program in 0..7（Acoustic/Electric Pianos）
+        - 吉他：program in 24..31
+        - 贝斯：program in 32..39
+        其余：默认选择非鼓通道。
+        若未命中则返回 False，由调用方回退通道逻辑。
+        """
+        try:
+            tree = getattr(self, '_parts_tree', None)
+            parts = getattr(self, '_last_split_parts', {}) or {}
+            if tree is None or not parts:
+                return False
+            inst = str(getattr(self, 'current_instrument', '') or '')
+            selected = 0
+            self._parts_checked = {}
+            # 定义家族
+            fam = {
+                '电子琴': set(range(0, 8)),
+                '吉他': set(range(24, 32)),
+                '贝斯': set(range(32, 40)),
+            }
+            for iid in tree.get_children():
+                vals = list(tree.item(iid, 'values'))
+                if not vals or len(vals) < 2:
+                    continue
+                name = vals[1]
+                sec = parts.get(name)
+                chan = None
+                prog = None
+                notes = []
+                try:
+                    if isinstance(sec, dict):
+                        meta = sec.get('meta', {}) or {}
+                        chan = meta.get('channel')
+                        prog = meta.get('program')
+                        notes = sec.get('notes', [])
+                    else:
+                        meta = getattr(sec, 'meta', {}) or {}
+                        chan = meta.get('channel')
+                        prog = meta.get('program')
+                        notes = getattr(sec, 'notes', []) or []
+                except Exception:
+                    pass
+                # 若元数据缺失则从事件推断主通道与主 Program
+                if (chan is None or prog is None) and notes:
+                    try:
+                        from collections import Counter
+                        chs = [int(ev.get('channel')) for ev in notes if isinstance(ev, dict) and ev.get('type') in ('note_on','note_off') and ev.get('channel') is not None]
+                        progs = [int(ev.get('program')) for ev in notes if isinstance(ev, dict) and ev.get('type') in ('note_on','note_off') and ev.get('program') is not None]
+                        if chan is None:
+                            chan = Counter(chs).most_common(1)[0][0] if chs else None
+                        if prog is None:
+                            prog = Counter(progs).most_common(1)[0][0] if progs else None
+                    except Exception:
+                        pass
+                hit = False
+                if inst == '架子鼓':
+                    hit = (chan is not None and int(chan) == 9)
+                elif inst in ('电子琴','吉他','贝斯'):
+                    if prog is not None and isinstance(prog, (int, float)):
+                        try:
+                            hit = (int(chan) != 9) and (int(prog) in fam[inst])
+                        except Exception:
+                            hit = False
+                    else:
+                        hit = False
+                else:
+                    # 其他未知乐器：默认非鼓
+                    hit = (chan is not None and int(chan) != 9)
+                self._parts_checked[name] = bool(hit)
+                vals[0] = '☑' if hit else '☐'
+                tree.item(iid, values=vals)
+                if hit:
+                    selected += 1
+            if selected == 0:
+                return False
+            return True
+        except Exception:
+            return False
+
+
+    def _on_root_unmap(self, event=None):
+        return
+
+    def _on_root_map(self, event=None):
+        return
 
     def _update_titles_suffix(self, suffix_text: str | None):
         """更新 UIManager 顶部内嵌标题后缀；根窗口标题保持固定中文。"""
@@ -562,26 +879,17 @@ class MeowFieldAutoPiano:
         except Exception as e:
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': f'创建文件选择组件失败: {e}'}, 'App')
 
-    def _create_playback_control_component(self, parent_left=None, include_ensemble: bool = True):
+    def _create_playback_control_component(self, parent_left=None, include_ensemble: bool = True, instrument: str | None = None):
         """创建播放控制组件（委托组件模块）"""
         try:
             target = parent_left if parent_left is not None else self.ui_manager.left_frame
-            comp_playback.create_playback_controls(self, target, include_ensemble=include_ensemble)
+            comp_playback.create_playback_controls(self, target, include_ensemble=include_ensemble, instrument=instrument)
         except Exception as e:
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': f'创建播放控制组件失败: {e}'}, 'App')
 
     def _create_right_pane(self, parent_right=None, *, show_midi_parse: bool = True, show_events: bool = True, show_logs: bool = True):
-        """创建右侧分页（委托组件模块）
-        参数：
-        - show_midi_parse: 是否显示“解析当前MIDI”按钮与“MIDI解析设置”页签
-        - show_events: 是否显示“事件表”页签
-        - show_logs: 是否显示“系统日志”页签
-        """
-        try:
-            target = parent_right if parent_right is not None else self.ui_manager.right_frame
-            comp_right.create_right_pane(self, target, show_midi_parse=show_midi_parse, show_events=show_events, show_logs=show_logs)
-        except Exception:
-            pass
+        """右侧入口已移除：不再创建右侧解析面板（改为左侧分页）。"""
+        return
 
 
     def _create_auto_play_controls(self, parent):
@@ -1038,12 +1346,40 @@ class MeowFieldAutoPiano:
             
             # 自动添加到播放列表
             self._add_file_to_playlist(file_path, "MIDI文件")
-            # 新工作流：先识别分部，填充左侧分部列表，用户选择后再解析
-            try:
-                self._ui_select_partitions()
-                self.ui_manager.set_status("已识别分部，请在左侧选择分部后点击‘应用所选分部并解析’")
-            except Exception as e:
-                self._log_message(f"分部识别失败: {e}", "ERROR")
+            # 自动解析分部（除了架子鼓）
+            if getattr(self, 'current_instrument', '') != '架子鼓':
+                try:
+                    self._log_message("正在自动解析分部...", "INFO")
+                    # 自动识别分部（内部将基于当前拆分模式与乐器进行自动勾选）
+                    self._ui_select_partitions()
+                    # 若无任何被勾选的分部，兜底为全选后继续
+                    try:
+                        sels = self._get_parts_checked_names()
+                    except Exception:
+                        sels = []
+                    if not sels:
+                        self._log_message("未检测到已勾选分部，兜底为全选", "WARNING")
+                        self._ui_parts_select_all()
+                    # 自动应用解析设置
+                    self._ui_apply_selected_parts_and_analyze()
+                    # 记录解析文件
+                    try:
+                        self.analysis_file = file_path
+                    except Exception:
+                        pass
+                    self._log_message("自动解析完成，已应用所选分部", "SUCCESS")
+                    self.ui_manager.set_status("已自动解析并应用设置")
+                except Exception as e:
+                    self._log_message(f"自动解析失败: {e}", "ERROR")
+                    # 失败时回退到手动模式
+                    try:
+                        self._ui_select_partitions()
+                        self.ui_manager.set_status("自动解析失败，请手动选择分部后解析")
+                    except Exception:
+                        pass
+            else:
+                self._log_message("架子鼓模式：无需解析，可直接播放", "INFO")
+                self.ui_manager.set_status("架子鼓模式：可直接播放")
     
     def _convert_mp3_to_midi(self):
         """转换音频到MIDI"""
@@ -1056,47 +1392,85 @@ class MeowFieldAutoPiano:
             messagebox.showerror("错误", "音频文件不存在")
             return
         
+        # 防并发
+        if getattr(self, '_audio_convert_running', False):
+            messagebox.showwarning("提示", "正在转换中，请稍候...")
+            return
+        self._audio_convert_running = True
         self._log_message("开始转换音频到MIDI...")
-        self.ui_manager.set_status("正在转换...")
-        
         try:
-            # 检查PianoTrans模型路径
-            pianotrans_path = "PianoTrans-v1.0"
-            if not os.path.exists(pianotrans_path):
-                self._log_message("PianoTrans模型目录不存在", "ERROR")
-                messagebox.showerror("错误", f"PianoTrans模型目录不存在: {pianotrans_path}\n\n请确保PianoTrans-v1.0目录在程序根目录下")
-                return
-            
-            # 尝试使用meowauto模块中的音频转换功能
-            from meowauto.audio import AudioConverter
-            from meowauto.core import Logger
-            
-            # 创建转换器实例
-            logger = Logger()
-            converter = AudioConverter(logger)
-            
-            # 执行转换
-            output_path = os.path.splitext(audio_path)[0] + ".mid"
-            success = converter.convert_audio_to_midi(audio_path, output_path)
-            
-            if success:
-                self._log_message(f"音频转换成功: {output_path}", "SUCCESS")
-                self.ui_manager.set_status("音频转换完成")
-                messagebox.showinfo("成功", f"音频文件已转换为MIDI格式\n保存位置: {output_path}")
-                
-                # 自动添加到播放列表
-                self._add_file_to_playlist(output_path, "MIDI文件")
-            else:
-                self._log_message("音频转换失败", "ERROR")
-                self.ui_manager.set_status("音频转换失败")
-                messagebox.showerror("错误", "音频转换失败，请检查文件格式和PianoTrans模型")
-                
-        except ImportError:
-            self._log_message("音频转换模块不可用", "ERROR")
-            messagebox.showerror("错误", "音频转换模块不可用，请检查meowauto模块")
-        except Exception as e:
-            self._log_message(f"音频转换异常: {str(e)}", "ERROR")
-            messagebox.showerror("错误", f"音频转换过程中发生错误:\n{str(e)}")
+            self.ui_manager.set_status("正在转换...")
+        except Exception:
+            pass
+
+        def _worker():
+            try:
+                # 统一入口：调用 meowauto.audio.audio2midi.convert_audio_to_midi
+                try:
+                    from meowauto.audio.audio2midi import convert_audio_to_midi
+                except Exception as e:
+                    def _import_err():
+                        self._log_message("音频转换入口不可用", "ERROR")
+                        messagebox.showerror("错误", f"音频转换入口不可用：{e}")
+                        try:
+                            self.ui_manager.set_status("音频转换失败")
+                        except Exception:
+                            pass
+                        self._audio_convert_running = False
+                    self.root.after(0, _import_err)
+                    return
+
+                ok, out_path, err_msg, logs = convert_audio_to_midi(audio_path, None, pianotrans_dir="PianoTrans-v1.0")
+
+                # 记录日志
+                try:
+                    if logs.get('stdout'):
+                        self._log_message(f"PianoTrans输出: {logs['stdout']}", "INFO")
+                    if logs.get('stderr'):
+                        self._log_message(f"PianoTrans错误: {logs['stderr']}", "ERROR")
+                    if logs.get('elapsed'):
+                        self._log_message(f"转换耗时: {logs['elapsed']:.1f}s", "INFO")
+                except Exception:
+                    pass
+
+                def _finish():
+                    try:
+                        if ok and out_path and os.path.exists(out_path):
+                            self._log_message(f"音频转换成功: {out_path}", "SUCCESS")
+                            try:
+                                self.ui_manager.set_status("音频转换完成")
+                            except Exception:
+                                pass
+                            messagebox.showinfo("成功", f"音频文件已转换为MIDI格式\n保存位置: {out_path}")
+                            try:
+                                self._add_file_to_playlist(out_path, "MIDI文件")
+                            except Exception:
+                                pass
+                        else:
+                            em = err_msg or "转换失败"
+                            self._log_message(f"音频转换失败: {em}", "ERROR")
+                            try:
+                                self.ui_manager.set_status("音频转换失败")
+                            except Exception:
+                                pass
+                            messagebox.showerror("错误", f"音频转换失败：{em}\n请检查文件与模型")
+                    finally:
+                        self._audio_convert_running = False
+
+                self.root.after(0, _finish)
+            except Exception as e:
+                def _fail():
+                    self._log_message(f"音频转换异常: {e}", "ERROR")
+                    try:
+                        self.ui_manager.set_status("音频转换失败")
+                    except Exception:
+                        pass
+                    messagebox.showerror("错误", f"音频转换过程中发生错误:\n{e}")
+                    self._audio_convert_running = False
+                self.root.after(0, _fail)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
     
     def _batch_convert(self):
         """批量转换"""
@@ -1175,6 +1549,14 @@ class MeowFieldAutoPiano:
             self._log_message(f"应用回放设置失败: {str(e)}", "ERROR")
 
     # ===================== 分部/分轨 选择与控制 =====================
+    def _select_all_partitions(self):
+        """默认全选所有分部"""
+        try:
+            # 使用正确的全选方法
+            self._ui_parts_select_all()
+        except Exception as e:
+            self._log_message(f"全选分部失败: {e}", "ERROR")
+    
     def _ui_select_partitions(self):
         """识别当前 MIDI 的分部并在左侧“分部识别与选择”树表中展示；不弹出小窗。"""
         try:
@@ -1186,39 +1568,43 @@ class MeowFieldAutoPiano:
                 self.playback_controller = PlaybackController(self, getattr(self, 'playback_service', None))
             # 构建事件
             events = self.playback_controller._build_note_events_with_track(midi_path)
-            # 乐器分部优先
-            parts = CombinedInstrumentPartitioner().split(events)
-            # 回退：若无识别结果，则按轨/通道分离
-            if not parts:
+            # 根据拆分模式选择策略（默认：仅通道）
+            split_mode = '仅通道'
+            try:
+                if hasattr(self, 'partition_split_mode_var'):
+                    split_mode = str(self.partition_split_mode_var.get()) or '仅通道'
+            except Exception:
+                split_mode = '仅通道'
+            parts = None
+            if split_mode == '仅通道':
+                # 直接按轨/通道拆分
                 parts = TrackChannelPartitioner(include_meta=True).split(events)
+            else:  # 智能聚类
+                parts = CombinedInstrumentPartitioner().split(events)
+                if not parts:
+                    parts = TrackChannelPartitioner(include_meta=True).split(events)
             if not parts:
                 messagebox.showwarning("提示", "未能识别到可用分部")
                 return
             self._last_split_parts = parts
             # 填充左侧 Treeview
             self._populate_parts_tree(parts)
-            # 默认策略：若识别出与当前乐器相关的分部则预选，否则全选
-            try:
-                related = []
-                cur_inst = getattr(self, 'current_instrument', '')
-                for name in parts.keys():
-                    if ('鼓' in cur_inst and 'drums' in name) or ('贝斯' in cur_inst and 'bass' in name) or ('吉他' in cur_inst and 'guitar' in name) or ('琴' in cur_inst and ('keys' in name or 'piano' in name)):
-                        related.append(name)
-                if related:
-                    self._selected_part_names = set(related)
-                    # 选中这些节点
-                    if hasattr(self, '_parts_tree'):
-                        for iid in self._parts_tree.get_children():
-                            vals = self._parts_tree.item(iid, 'values')
-                            if vals and vals[0] in self._selected_part_names:
-                                self._parts_tree.selection_add(iid)
-                else:
-                    # 默认全选
-                    self._ui_parts_select_all()
-            except Exception:
-                self._ui_parts_select_all()
+            # 根据拆分模式自动勾选
+            if split_mode == '智能聚类':
+                matched = self._ui_parts_auto_select_by_instrument_cluster()
+                if not matched:
+                    # 无匹配则回退为通道逻辑
+                    self._ui_parts_auto_select_by_channel()
+            else:
+                # 基于通道自动勾选（不再默认全选）
+                self._ui_parts_auto_select_by_channel()
             self._log_message("分部识别完成：请在左侧勾选需要的分部，然后点击‘应用所选分部并解析’。")
         except Exception as e:
+            # 失败：记录错误并尽量不选中任何分部，避免误触发
+            try:
+                self._ui_parts_select_none()
+            except Exception:
+                pass
             self._log_message(f"分部识别失败: {e}", "ERROR")
 
     def _populate_parts_tree(self, parts: dict):
@@ -1410,7 +1796,7 @@ class MeowFieldAutoPiano:
                 mode = None
             ok = bool(self.playback_controller.play_selected_parts(
                 parts, selected,
-                tempo=float(getattr(self, 'tempo_scale_var', tk.DoubleVar(value=1.0)).get()),
+                tempo=float(getattr(self, 'tempo_var', tk.DoubleVar(value=1.0)).get()),
                 on_progress=getattr(self, '_on_play_progress', None),
                 mode=mode,
                 my_role=my_role,
@@ -1582,17 +1968,8 @@ class MeowFieldAutoPiano:
             sel = self.playlist_tree.selection()
             if not sel:
                 return
-            # 取首个选中
-            values = self.playlist_tree.item(sel[0], 'values')
-            index = int(values[0]) - 1
-            if self.playlist.set_current_item(index):
-                item = self.playlist.get_current_item()
-                if item and item.get('path'):
-                    # 将路径放入 midi_path_var 并开始
-                    if not hasattr(self, 'midi_path_var'):
-                        self.midi_path_var = tk.StringVar()
-                    self.midi_path_var.set(item['path'])
-                    self._start_auto_play()
+            # 直接走统一入口，保证触发解析与预处理
+            self._play_selected_playlist_item()
         except Exception as e:
             self._log_message(f"播放选中失败: {e}", "ERROR")
 
@@ -1602,11 +1979,21 @@ class MeowFieldAutoPiano:
                 return
             next_item = self.playlist.play_next()
             if next_item and next_item.get('path'):
-                if not hasattr(self, 'midi_path_var'):
-                    self.midi_path_var = tk.StringVar()
-                self.midi_path_var.set(next_item['path'])
-                self._start_auto_play()
-                self._rebuild_playlist_tree()
+                # 同步UI选中到当前索引并走统一入口
+                try:
+                    self._rebuild_playlist_tree()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'playlist_tree') and hasattr(self.playlist, 'current_index'):
+                        items = list(self.playlist_tree.get_children())
+                        ci = getattr(self.playlist, 'current_index', -1)
+                        if 0 <= ci < len(items):
+                            self.playlist_tree.selection_set(items[ci])
+                            self.playlist_tree.see(items[ci])
+                except Exception:
+                    pass
+                self._play_selected_playlist_item()
         except Exception as e:
             self._log_message(f"下一首失败: {e}", "ERROR")
 
@@ -1616,55 +2003,82 @@ class MeowFieldAutoPiano:
                 return
             prev_item = self.playlist.play_previous()
             if prev_item and prev_item.get('path'):
-                if not hasattr(self, 'midi_path_var'):
-                    self.midi_path_var = tk.StringVar()
-                self.midi_path_var.set(prev_item['path'])
-                self._start_auto_play()
-                self._rebuild_playlist_tree()
+                # 同步UI选中到当前索引并走统一入口
+                try:
+                    self._rebuild_playlist_tree()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'playlist_tree') and hasattr(self.playlist, 'current_index'):
+                        items = list(self.playlist_tree.get_children())
+                        ci = getattr(self.playlist, 'current_index', -1)
+                        if 0 <= ci < len(items):
+                            self.playlist_tree.selection_set(items[ci])
+                            self.playlist_tree.see(items[ci])
+                except Exception:
+                    pass
+                self._play_selected_playlist_item()
         except Exception as e:
             self._log_message(f"上一首失败: {e}", "ERROR")
 
     def _apply_player_options(self):
         """将 UI 的高级设置应用到 AutoPlayer"""
         try:
-            if hasattr(self, 'auto_player') and self.auto_player and hasattr(self.auto_player, 'set_options'):
-                # 仅保留必要选项下发：键位回退与黑键移调
-                enable_key_fallback = bool(self.r_enable_key_fallback_var.get()) if hasattr(self, 'r_enable_key_fallback_var') else True
-                # 回放层禁用黑键移调
-                enable_black_transpose = False
-                black_transpose_strategy = (
-                    'down' if (
-                        getattr(self, 'black_transpose_strategy_var', None) and 
-                        str(self.black_transpose_strategy_var.get()) in ('向下', '向下优先')
-                    ) else 'nearest'
-                )
-                # 新增：和弦伴奏选项（默认关闭；UI 尚未提供时使用默认值）
-                enable_chord_accomp = False
-                chord_accomp_mode = 'triad'
-                chord_accomp_min_sustain_ms = 120
-                chord_replace_melody = False
-                try:
-                    if hasattr(self, 'enable_chord_accomp_var'):
-                        enable_chord_accomp = bool(self.enable_chord_accomp_var.get())
-                    if hasattr(self, 'chord_accomp_mode_var'):
-                        chord_accomp_mode = str(self.chord_accomp_mode_var.get()) or 'triad'
-                    if hasattr(self, 'chord_accomp_min_sustain_var'):
-                        chord_accomp_min_sustain_ms = int(self.chord_accomp_min_sustain_var.get())
-                    if hasattr(self, 'chord_replace_melody_var'):
-                        chord_replace_melody = bool(self.chord_replace_melody_var.get())
-                except Exception:
-                    # 保持默认值
-                    pass
+            # 基础：键位回退 & 回放层禁用黑键移调
+            enable_key_fallback = bool(self.r_enable_key_fallback_var.get()) if hasattr(self, 'r_enable_key_fallback_var') else True
+            enable_black_transpose = False
+            black_transpose_strategy = (
+                'down' if (
+                    hasattr(self, 'black_transpose_strategy_var') and 
+                    str(self.black_transpose_strategy_var.get()) in ('向下', '向下优先')
+                ) else 'nearest'
+            )
 
-                self.auto_player.set_options(
-                    enable_key_fallback=enable_key_fallback,
-                    enable_black_transpose=enable_black_transpose,
-                    black_transpose_strategy=black_transpose_strategy,
-                    enable_chord_accomp=enable_chord_accomp,
-                    chord_accomp_mode=chord_accomp_mode,
-                    chord_accomp_min_sustain_ms=chord_accomp_min_sustain_ms,
-                    chord_replace_melody=chord_replace_melody,
-                )
+            # 和弦伴奏（非鼓可见）
+            enable_chord_accomp = bool(getattr(self, 'enable_chord_accomp_var', tk.BooleanVar(value=True)).get()) if hasattr(self, 'enable_chord_accomp_var') else True
+            chord_min_sustain_ms = int(getattr(self, 'chord_min_sustain_ms_var', tk.IntVar(value=1500)).get() if hasattr(self, 'chord_min_sustain_ms_var') else 1500)
+            chord_replace_melody = bool(getattr(self, 'chord_replace_melody_var', tk.BooleanVar(value=False)).get() if hasattr(self, 'chord_replace_melody_var') else False)
+            chord_block_window_ms = int(getattr(self, 'chord_block_window_ms_var', tk.IntVar(value=50)).get() if hasattr(self, 'chord_block_window_ms_var') else 50)
+
+            # 多键/防重触发（默认原样）
+            mode_disp = str(getattr(self, 'multi_key_mode_var', tk.StringVar(value='原样')).get()) if hasattr(self, 'multi_key_mode_var') else '原样'
+            mode_map = {'原样': 'original', '合并(块和弦)': 'merge', '琶音': 'arpeggio'}
+            multi_key_cluster_mode = mode_map.get(mode_disp, 'original')
+            multi_key_cluster_window_ms = int(getattr(self, 'multi_key_window_var', tk.IntVar(value=50)).get() if hasattr(self, 'multi_key_window_var') else 50)
+            anti_retrigger_across_parts = bool(getattr(self, 'anti_retrigger_enable_var', tk.BooleanVar(value=True)).get() if hasattr(self, 'anti_retrigger_enable_var') else True)
+            anti_retrigger_window_ms = int(getattr(self, 'anti_retrigger_window_var', tk.IntVar(value=30)).get() if hasattr(self, 'anti_retrigger_window_var') else 30)
+
+            # 针对架子鼓：保持原样风格，且不下发和弦（UI已隐藏，但再次兜底）
+            cur_inst = getattr(self, 'current_instrument', '电子琴')
+            if cur_inst == '架子鼓':
+                enable_chord_accomp = False
+                chord_replace_melody = False
+                multi_key_cluster_mode = 'original'
+
+            options = {
+                'enable_key_fallback': enable_key_fallback,
+                'enable_black_transpose': enable_black_transpose,
+                'black_transpose_strategy': black_transpose_strategy,
+                'enable_chord_accomp': enable_chord_accomp,
+                'chord_min_sustain_ms': chord_min_sustain_ms,
+                'chord_block_window_ms': chord_block_window_ms,
+                'chord_replace_melody': chord_replace_melody,
+                'multi_key_cluster_mode': multi_key_cluster_mode,
+                'multi_key_cluster_window_ms': multi_key_cluster_window_ms,
+                'anti_retrigger_across_parts': anti_retrigger_across_parts,
+                'anti_retrigger_window_ms': anti_retrigger_window_ms,
+            }
+
+            # 通过服务层下发，兼容未来替换播放器
+            try:
+                if getattr(self, 'playback_service', None) and hasattr(self.playback_service, 'configure_auto_player'):
+                    self.playback_service.configure_auto_player(options=options)
+                    return
+            except Exception:
+                pass
+            # 回退：直接对现有 auto_player 下发
+            if hasattr(self, 'auto_player') and self.auto_player and hasattr(self.auto_player, 'set_options'):
+                self.auto_player.set_options(**options)
         except Exception as e:
             self._log_message(f"应用回放设置失败: {str(e)}", "ERROR")
     
@@ -1816,28 +2230,38 @@ class MeowFieldAutoPiano:
                     enable_chord_accomp = False
                     chord_accomp_mode = 'triad'
                     chord_accomp_min_sustain_ms = 120
+                    chord_replace_melody = False
                     try:
+                        # 获取和弦伴奏设置
                         if hasattr(self, 'enable_chord_accomp_var'):
                             enable_chord_accomp = bool(self.enable_chord_accomp_var.get())
                         if hasattr(self, 'chord_accomp_mode_var'):
                             chord_accomp_mode = str(self.chord_accomp_mode_var.get()) or 'triad'
                         if hasattr(self, 'chord_accomp_min_sustain_var'):
                             chord_accomp_min_sustain_ms = int(self.chord_accomp_min_sustain_var.get())
-                    except Exception:
-                        pass
+                        if hasattr(self, 'chord_replace_melody_var'):
+                            chord_replace_melody = bool(self.chord_replace_melody_var.get())
+                        
+                        if enable_chord_accomp:
+                            self._log_message(f"和弦伴奏已启用: 模式={chord_accomp_mode}, 持续={chord_accomp_min_sustain_ms}ms", "INFO")
+                    except Exception as e:
+                        self._log_message(f"获取和弦设置失败: {e}", "ERROR")
                     try:
-                        # 黑键移调为后处理，这里禁用
+                        # 应用黑键移调和和弦伴奏设置
                         self.playback_service.configure_auto_player(
                             debug=(bool(self.debug_var.get()) if hasattr(self, 'debug_var') else None),
                             options=dict(
                                 enable_key_fallback=enable_key_fallback,
-                                enable_black_transpose=False,
-                                black_transpose_strategy='nearest',
+                                enable_black_transpose=enable_black_transpose,
+                                black_transpose_strategy=black_transpose_strategy,
                                 enable_chord_accomp=enable_chord_accomp,
                                 chord_accomp_mode=chord_accomp_mode,
                                 chord_accomp_min_sustain_ms=chord_accomp_min_sustain_ms,
+                                chord_replace_melody=chord_replace_melody,
                             ),
                         )
+                        if enable_chord_accomp:
+                            self._log_message("已向AutoPlayer传递和弦伴奏设置", "INFO")
                     except Exception:
                         pass
 
@@ -1852,27 +2276,54 @@ class MeowFieldAutoPiano:
                         from meowauto.config.key_mapping_manager import DEFAULT_MAPPING
                         default_key_mapping = DEFAULT_MAPPING
 
-                    # 分析结果复用与策略名
-                    try:
-                        strategy_name = self._resolve_strategy_name()
-                    except Exception:
-                        strategy_name = "strategy_21key"
-                    use_analyzed = False
-                    try:
-                        if getattr(self, 'analysis_notes', None) and getattr(self, 'analysis_file', ''):
-                            if os.path.abspath(self.analysis_file) == os.path.abspath(midi_path):
-                                use_analyzed = True
-                    except Exception:
+                    # 架子鼓直接播放，其他乐器使用解析设置
+                    if self.current_instrument == 'drums':
+                        # 架子鼓直接使用 DrumsController
+                        try:
+                            if not hasattr(self, 'drums_controller') or not self.drums_controller:
+                                from meowauto.app.controllers.drums_controller import DrumsController
+                                self.drums_controller = DrumsController(self.playback_service)
+                            success = bool(self.drums_controller.start_from_file(
+                                midi_path, 
+                                tempo=self.tempo_var.get()
+                            ))
+                        except Exception as e:
+                            self._log_message(f"架子鼓播放失败: {e}", "ERROR")
+                            success = False
+                    else:
+                        # 其他乐器使用解析设置流程
+                        try:
+                            strategy_name = self._resolve_strategy_name()
+                        except Exception:
+                            strategy_name = "strategy_21key"
                         use_analyzed = False
+                        try:
+                            # 检查是否有解析结果且文件匹配
+                            if (hasattr(self, 'analysis_notes') and self.analysis_notes and 
+                                hasattr(self, 'analysis_file') and self.analysis_file):
+                                if os.path.abspath(self.analysis_file) == os.path.abspath(midi_path):
+                                    use_analyzed = True
+                                    self._log_message(f"使用已解析结果播放，事件数: {len(self.analysis_notes)}", "INFO")
+                                else:
+                                    self._log_message(f"解析文件不匹配: {self.analysis_file} vs {midi_path}", "WARNING")
+                            else:
+                                self._log_message("未找到解析结果，使用原始MIDI播放", "WARNING")
+                        except Exception as e:
+                            self._log_message(f"检查解析结果时出错: {e}", "ERROR")
+                            use_analyzed = False
 
-                    success = bool(self.playback_service.start_auto_play_from_path(
-                        midi_path,
-                        tempo=self.tempo_var.get(),
-                        key_mapping=default_key_mapping,
-                        strategy_name=strategy_name,
-                        use_analyzed=use_analyzed,
-                        analyzed_notes=(self.analysis_notes if use_analyzed else None),
-                    ))
+                        # 添加调试信息
+                        tempo_value = self.tempo_var.get()
+                        self._log_message(f"启动播放: tempo={tempo_value}, use_analyzed={use_analyzed}", "DEBUG")
+                        
+                        success = bool(self.playback_service.start_auto_play_from_path(
+                            midi_path,
+                            tempo=tempo_value,
+                            key_mapping=default_key_mapping,
+                            strategy_name=strategy_name,
+                            use_analyzed=use_analyzed,
+                            analyzed_notes=(self.analysis_notes if use_analyzed else None),
+                        ))
                 else:
                     success = False
 
@@ -2859,8 +3310,9 @@ class MeowFieldAutoPiano:
                 lines = self.log_text.get("1.0", tk.END).split('\n')
                 if len(lines) > 1000:
                     self.log_text.delete("1.0", "500.0")
-        except Exception as e:
-            print(f"日志记录失败: {e}")
+        except Exception:
+            # 静默忽略日志失败，避免噪声
+            pass
     
     def _add_test_playlist_data(self):
         """添加测试数据到播放列表"""
@@ -2927,7 +3379,8 @@ class MeowFieldAutoPiano:
             widget = event.widget if event is not None else None
             is_root = (widget is self.root) if widget is not None else True
             name = str(widget) if widget is not None else 'root'
-            print(f"[DEBUG] <Destroy> 捕获: widget={name}, is_root={is_root}")
+            if getattr(self, '_ui_debug', False):
+                print(f"[DEBUG] <Destroy> 捕获: widget={name}, is_root={is_root}")
             try:
                 self._log_message(f"窗口销毁事件: {name}, is_root={is_root}", "INFO")
             except Exception:

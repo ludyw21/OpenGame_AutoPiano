@@ -8,7 +8,12 @@ def create_file_selection(controller, parent_left):
     """构建左侧：文件选择区"""
     target = parent_left
     file_frame = ttk.LabelFrame(target, text="文件选择", padding="12")
-    file_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+    # 使用 pack 布局到父容器，避免与父容器中已使用 pack 的其他组件冲突
+    try:
+        file_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+    except Exception:
+        # 回退：若 pack 不可用则尝试 grid
+        file_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
     ttk.Label(file_frame, text="MIDI文件:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
     controller.midi_path_var = tk.StringVar()

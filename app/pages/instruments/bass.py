@@ -30,14 +30,8 @@ class BassPage(BasePage):
         self._prev_keymap_profile = None
 
     def mount(self, left: ttk.Frame, right: ttk.Frame):
-        # 标题区
-        try:
-            header = ttk.Frame(left)
-            header.pack(fill=tk.X, pady=(0, 6))
-            ttk.Label(header, text="贝斯 · 独奏", font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT)
-            ttk.Label(left, text="键位布局：3×7（无和弦键）。此页不展示合奏相关控件。").pack(anchor=tk.W)
-        except Exception:
-            pass
+        # 顶部标题已移除，让上层分页标签占据顶部
+        ttk.Label(left, text="键位布局：3×7（无和弦键）。此页不展示合奏相关控件。").pack(anchor=tk.W)
 
         # 内容容器：避免 pack/grid 混用冲突
         try:
@@ -51,20 +45,13 @@ class BassPage(BasePage):
         except Exception:
             content = left
 
-        # 左侧：文件选择、播放控制（禁用合奏页签）、底部进度
+        # 左侧：复用统一的播放控制组件（贝斯无合奏页签，不在此重复创建文件选择）
         try:
-            self.controller._create_file_selection_component(content)
+            include_ensemble = False
+            self.controller._create_playback_control_component(content, include_ensemble=include_ensemble, instrument='贝斯')
         except Exception:
             pass
-        try:
-            # include_ensemble=False 隐藏“合奏”页签及相关控件
-            self.controller._create_playback_control_component(content, include_ensemble=False)
-        except Exception:
-            pass
-        try:
-            self.controller._create_bottom_progress(content)
-        except Exception:
-            pass
+        # 已移除底部进度组件
 
         # 切换键位映射到 bass（3×7）。注意：保存并在卸载时恢复。
         try:
@@ -77,11 +64,7 @@ class BassPage(BasePage):
         except Exception:
             pass
 
-        # 右侧：仅保留“系统日志”，隐藏“MIDI解析/事件表”
-        try:
-            self.controller._create_right_pane(right, show_midi_parse=False, show_events=False, show_logs=True)
-        except Exception:
-            pass
+        # 右侧已移除
 
         self._mounted = True
 

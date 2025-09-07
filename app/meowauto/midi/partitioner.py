@@ -33,11 +33,13 @@ class Partitioner(Protocol):
 
 
 class StrategyDrums:
-    """鼓分部策略（占位）。
-    设计思路：
-    - 基于通道/打击乐音色（channel 10 或 percussion program）
-    - 再结合音高集合/密度节奏特征进行筛选
+    """鼓分部策略。
+    严格模式（默认）：仅以 GM 第10通道（0-based 为 9）或显式 is_drum 标志识别，避免过度包含。
+    宽松模式（loose=True）：额外启用名称/Program/音高区间等启发式，适用于数据缺失或非标准工程。
     """
+    def __init__(self, *, loose: bool = False):
+        self.loose = loose
+
     def extract(self, events: List[Dict[str, Any]] | Any) -> PartSection:
         if not isinstance(events, list):
             return PartSection(name="drums", notes=[], meta={"strategy": "drums", "status": "invalid_input"})
@@ -54,18 +56,18 @@ class StrategyDrums:
             pitch = ev.get("note")
             name = str(ev.get("instrument_name", "")).lower()
 
-            # 规则：
-            # 1) channel == 9 （MIDI 第10通道）
-            # 2) 显式 is_drum 标志
-            # 3) 名称包含 percussion/drum
-            # 4) 对 pitch 使用典型鼓区（35-81，含底鼓到吊镲）作为兜底特征
-            cond_channel = (ch == 9)
-            cond_name = ("drum" in name or "percussion" in name)
-            cond_prog = (prog in (112, 113, 114, 115))  # 部分工程约定：映射到打击乐套件，宽松处理
-            cond_pitch = isinstance(pitch, int) and 35 <= pitch <= 81
-
-            if cond_channel or is_drum_flag or cond_name or cond_prog or cond_pitch:
+            # 严格规则优先：
+            cond_channel = (ch == 9)  # 第10通道
+            if cond_channel or is_drum_flag:
                 drums.append(ev)
+                continue
+            # 宽松扩展（可选）：
+            if self.loose:
+                cond_name = ("drum" in name or "percussion" in name)
+                cond_prog = (isinstance(prog, int) and prog in (112, 113, 114, 115))
+                cond_pitch = isinstance(pitch, int) and 35 <= pitch <= 81
+                if cond_name or cond_prog or cond_pitch:
+                    drums.append(ev)
 
         return PartSection(
             name="drums",
@@ -286,8 +288,9 @@ class StrategyKeys:
 
 class CombinedInstrumentPartitioner:
     """组合乐器识别分部器：输出 drums/bass/guitar/keys 等可用分部。"""
-    def __init__(self, *, include_drums: bool = True, include_bass: bool = True, include_guitar: bool = True, include_keys: bool = True):
-        self._drums = StrategyDrums() if include_drums else None
+    def __init__(self, *, include_drums: bool = True, include_bass: bool = True, include_guitar: bool = True, include_keys: bool = True, drums_loose: bool = False):
+        # 智能聚类用于 UI 自动选择时，鼓默认严格识别，避免误将非鼓事件归入鼓
+        self._drums = StrategyDrums(loose=drums_loose) if include_drums else None
         self._bass = StrategyBass() if include_bass else None
         self._guitar = StrategyGuitar() if include_guitar else None
         self._keys = StrategyKeys() if include_keys else None

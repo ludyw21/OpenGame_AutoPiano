@@ -257,7 +257,7 @@ class PlaybackController:
 
     def _build_note_events_with_track(self, file_path: str) -> List[Dict[str, Any]]:
         """将 MIDI 转换为含 track/channel/program 的 note_on/note_off 事件序列（秒）。
-        - 处理多轨；每轨维护 tempo；使用 mido.tick2second 做换算。
+        - 处理多轨；使用“全局 tempo 映射表”进行 tick→秒 换算，确保所有轨道对齐。
         - program 记录最近一次 program_change 的值；无则为 None。
         - instrument_name 暂留空字符串，后续可按 GM 名称映射。
         """
@@ -268,87 +268,109 @@ class PlaybackController:
         except Exception:
             return []
         events: List[Dict[str, Any]] = []
+        # 1) 预扫描：收集所有消息的绝对 tick，用于构建全局 tempo 映射表
+        msgs: List[Dict[str, Any]] = []
         for ti, track in enumerate(mid.tracks):
-            t_ticks = 0
-            tempo = 500000  # 120bpm 默认
-            last_prog_by_ch: Dict[int, int] = {}
-            # 按 (channel,note) 记录起点 tick
-            on_stack: Dict[tuple, List[Dict[str, Any]]] = {}
+            t = 0
             for msg in track:
-                t_ticks += int(getattr(msg, 'time', 0) or 0)
-                if msg.type == 'set_tempo':
-                    tempo = int(getattr(msg, 'tempo', tempo) or tempo)
-                elif msg.type == 'program_change':
-                    ch = int(getattr(msg, 'channel', 0) or 0)
-                    last_prog_by_ch[ch] = int(getattr(msg, 'program', 0) or 0)
-                elif msg.type == 'note_on' and int(getattr(msg, 'velocity', 0) or 0) > 0:
-                    ch = int(getattr(msg, 'channel', 0) or 0)
-                    note = int(getattr(msg, 'note', 0) or 0)
-                    on_stack.setdefault((ch, note), []).append({
-                        'tick': t_ticks,
-                        'velocity': int(getattr(msg, 'velocity', 0) or 0),
-                        'program': last_prog_by_ch.get(ch),
-                    })
-                elif msg.type in ('note_off', 'note_on'):
-                    # note_on with velocity==0 作为 note_off
-                    if msg.type == 'note_on' and int(getattr(msg, 'velocity', 0) or 0) > 0:
-                        continue
-                    ch = int(getattr(msg, 'channel', 0) or 0)
-                    note = int(getattr(msg, 'note', 0) or 0)
-                    key = (ch, note)
-                    if key in on_stack and on_stack[key]:
-                        start = on_stack[key].pop(0)
-                        st = float(mido.tick2second(int(start['tick']), mid.ticks_per_beat, tempo))
-                        et = float(mido.tick2second(int(t_ticks), mid.ticks_per_beat, tempo))
-                        prog = start.get('program')
-                        # 生成 note_on / note_off 两个事件，便于分部器处理
-                        events.append({
-                            'type': 'note_on',
-                            'start_time': st,
-                            'note': note,
-                            'channel': ch,
-                            'track': ti,
-                            'program': prog,
-                            'instrument_name': '',
-                            'velocity': start.get('velocity', 0),
-                        })
-                        events.append({
-                            'type': 'note_off',
-                            'start_time': et,
-                            'note': note,
-                            'channel': ch,
-                            'track': ti,
-                            'program': prog,
-                            'instrument_name': '',
-                            'velocity': 0,
-                        })
-            # 清理未配对音符：以 0.2s 时值收尾
-            for (ch, note), stack in on_stack.items():
-                for start in stack:
-                    st = float(mido.tick2second(int(start['tick']), mid.ticks_per_beat, tempo))
-                    et = st + 0.2
-                    prog = start.get('program')
-                    events.append({
-                        'type': 'note_on',
-                        'start_time': st,
-                        'note': note,
-                        'channel': ch,
-                        'track': ti,
-                        'program': prog,
-                        'instrument_name': '',
-                        'velocity': start.get('velocity', 0),
-                    })
-                    events.append({
-                        'type': 'note_off',
-                        'start_time': et,
-                        'note': note,
-                        'channel': ch,
-                        'track': ti,
-                        'program': prog,
-                        'instrument_name': '',
-                        'velocity': 0,
-                    })
-        # 按时间与类型排序（release 在 press 之前）
+                # 先累积 delta，再记录本条消息的绝对 tick
+                t += int(getattr(msg, 'time', 0) or 0)
+                msgs.append({'msg': msg, 'tick': t, 'track': ti})
+        msgs.sort(key=lambda x: x['tick'])
+
+        ticks_per_beat = int(getattr(mid, 'ticks_per_beat', 480) or 480)
+        is_smpte = bool(ticks_per_beat < 0)
+        default_tempo = 500000  # 120 BPM
+
+        # 2) 构建 tick→秒 转换
+        smpte_seconds_per_tick = 0.0
+        if not is_smpte:
+            tempo_changes: List[Dict[str, Any]] = [{'tick': 0, 'tempo': default_tempo, 'acc_seconds': 0.0}]
+            last_t = default_tempo
+            for it in msgs:
+                m = it['msg']
+                if getattr(m, 'type', None) == 'set_tempo':
+                    tk = int(it['tick'])
+                    if not tempo_changes or tk != tempo_changes[-1]['tick'] or getattr(m, 'tempo', last_t) != last_t:
+                        tempo_changes.append({'tick': tk, 'tempo': int(getattr(m, 'tempo', last_t) or last_t), 'acc_seconds': 0.0})
+                        last_t = int(getattr(m, 'tempo', last_t) or last_t)
+            for i in range(1, len(tempo_changes)):
+                prev = tempo_changes[i-1]
+                cur = tempo_changes[i]
+                dt = max(0, int(cur['tick']) - int(prev['tick']))
+                spt = (float(prev['tempo']) / 1_000_000.0) / max(1, abs(ticks_per_beat))
+                cur['acc_seconds'] = float(prev['acc_seconds']) + dt * spt
+
+            def tick_to_seconds(tp: int) -> float:
+                idx = 0
+                for j in range(len(tempo_changes)):
+                    if int(tempo_changes[j]['tick']) <= int(tp):
+                        idx = j
+                    else:
+                        break
+                base = tempo_changes[idx]
+                spt = (float(base['tempo']) / 1_000_000.0) / max(1, abs(ticks_per_beat))
+                return float(base['acc_seconds']) + (int(tp) - int(base['tick'])) * spt
+        else:
+            # SMPTE 时间基：根据分辨率计算固定“秒/每tick”
+            div = int(ticks_per_beat)
+            hi = (div >> 8) & 0xFF
+            lo = div & 0xFF
+            if hi >= 128:
+                hi -= 256
+            fps = abs(hi) if hi != 0 else 30
+            tpf = lo if lo > 0 else 80
+            smpte_seconds_per_tick = 1.0 / (float(fps) * float(tpf))
+
+            def tick_to_seconds(tp: int) -> float:
+                return float(int(tp)) * float(smpte_seconds_per_tick)
+
+        # 3) 遍历生成 note_on/note_off 事件（用全局 tick_to_seconds 换算）
+        #    同时记录 program_change 以携带 program 元信息
+        last_prog_by_track_ch: Dict[tuple, int] = {}
+        on_stack: Dict[tuple, List[Dict[str, Any]]] = {}
+        for it in msgs:
+            m = it['msg']
+            tk = int(it['tick'])
+            ti = int(it['track'])
+            tpe = getattr(m, 'type', None)
+            if tpe == 'program_change':
+                ch = int(getattr(m, 'channel', 0) or 0)
+                last_prog_by_track_ch[(ti, ch)] = int(getattr(m, 'program', 0) or 0)
+                continue
+            if tpe == 'note_on' and int(getattr(m, 'velocity', 0) or 0) > 0:
+                ch = int(getattr(m, 'channel', 0) or 0)
+                note = int(getattr(m, 'note', 0) or 0)
+                on_stack.setdefault((ti, ch, note), []).append({
+                    'tick': tk,
+                    'velocity': int(getattr(m, 'velocity', 0) or 0),
+                    'program': last_prog_by_track_ch.get((ti, ch)),
+                })
+            elif tpe in ('note_off', 'note_on'):
+                if tpe == 'note_on' and int(getattr(m, 'velocity', 0) or 0) > 0:
+                    continue
+                ch = int(getattr(m, 'channel', 0) or 0)
+                note = int(getattr(m, 'note', 0) or 0)
+                key = (ti, ch, note)
+                stack = on_stack.get(key)
+                if stack:
+                    st_rec = stack.pop(0)
+                    st = float(tick_to_seconds(int(st_rec['tick'])))
+                    et = float(tick_to_seconds(tk))
+                    prog = st_rec.get('program')
+                    events.append({'type': 'note_on',  'start_time': st, 'note': note, 'channel': ch, 'track': ti, 'program': prog, 'instrument_name': '', 'velocity': st_rec.get('velocity', 0)})
+                    events.append({'type': 'note_off', 'start_time': et, 'note': note, 'channel': ch, 'track': ti, 'program': prog, 'instrument_name': '', 'velocity': 0})
+
+        # 4) 清理未配对：给固定时值（0.2s）
+        for (ti, ch, note), stack in on_stack.items():
+            for st_rec in stack:
+                st = float(tick_to_seconds(int(st_rec['tick'])))
+                et = st + 0.2
+                prog = st_rec.get('program')
+                events.append({'type': 'note_on',  'start_time': st, 'note': note, 'channel': ch, 'track': ti, 'program': prog, 'instrument_name': '', 'velocity': st_rec.get('velocity', 0)})
+                events.append({'type': 'note_off', 'start_time': et, 'note': note, 'channel': ch, 'track': ti, 'program': prog, 'instrument_name': '', 'velocity': 0})
+
+        # 5) 排序（同刻先 off 后 on）
         type_rank = {'note_off': 0, 'note_on': 1}
         events.sort(key=lambda x: (float(x.get('start_time', 0.0)), type_rank.get(x.get('type'), 2)))
         return events

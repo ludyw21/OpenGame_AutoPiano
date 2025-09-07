@@ -69,53 +69,107 @@ class Audio2MidiPage(BasePage):
             self._widgets['output_path_var'].set(path)
 
     def _do_convert(self):
-        self._ensure_converter()
-        if not self.converter:
-            messagebox.showerror("错误", "音频转换器未初始化")
-            return
+        # 统一入口：严格校验后再提示
         audio = self._widgets['audio_path_var'].get().strip()
         output = self._widgets['output_path_var'].get().strip()
         if not audio:
             messagebox.showwarning("提示", "请先选择音频文件")
             return
         if not output:
-            # 若未指定，默认与音频同目录同名 .mid
             base = os.path.splitext(os.path.basename(audio))[0] + ".mid"
             output = os.path.join(os.path.dirname(audio), base)
             self._widgets['output_path_var'].set(output)
+
         btn: ttk.Button = self._widgets['btn_convert']
-        btn.configure(state=tk.DISABLED)
         try:
-            def _done(success: bool, outp: str | None):
+            btn.configure(state=tk.DISABLED)
+        except Exception:
+            pass
+        try:
+            if hasattr(self.controller, '_log_message'):
+                self.controller._log_message(f"开始转换: {audio}", "INFO")
                 try:
-                    btn.configure(state=tk.NORMAL)
+                    if hasattr(self.controller, 'ui_manager'):
+                        self.controller.ui_manager.set_status("正在转换...")
                 except Exception:
                     pass
-                if success:
-                    try:
-                        self.controller._log_message(f"转换完成: {outp}", "SUCCESS")
-                    except Exception:
-                        pass
-                    messagebox.showinfo("完成", f"转换成功:\n{outp}")
-                else:
-                    try:
-                        self.controller._log_message("转换失败", "ERROR")
-                    except Exception:
-                        pass
-                    messagebox.showerror("失败", "转换失败，请查看右侧日志")
+        except Exception:
+            pass
 
-            # 异步转换
-            self.converter.convert_audio_to_midi_async(audio, output, complete_callback=_done)
+        def _worker():
+            ok = False
+            outp = output
+            err_msg = None
+            logs = {}
             try:
-                self.controller._log_message(f"开始转换: {audio}", "INFO")
-            except Exception:
-                pass
+                try:
+                    from meowauto.audio.audio2midi import convert_audio_to_midi
+                    ok, outp, err_msg, logs = convert_audio_to_midi(audio, output, pianotrans_dir="PianoTrans-v1.0")
+                except Exception as e:
+                    ok = False
+                    err_msg = f"入口不可用: {e}"
+            finally:
+                def _finish():
+                    try:
+                        try:
+                            btn.configure(state=tk.NORMAL)
+                        except Exception:
+                            pass
+                        # 打印日志
+                        try:
+                            if hasattr(self.controller, '_log_message'):
+                                if logs.get('stdout'):
+                                    self.controller._log_message(f"PianoTrans输出: {logs['stdout']}", "INFO")
+                                if logs.get('stderr'):
+                                    self.controller._log_message(f"PianoTrans错误: {logs['stderr']}", "ERROR")
+                                if logs.get('elapsed'):
+                                    self.controller._log_message(f"转换耗时: {logs['elapsed']:.1f}s", "INFO")
+                        except Exception:
+                            pass
+
+                        if ok and outp and os.path.exists(outp):
+                            try:
+                                if hasattr(self.controller, '_log_message'):
+                                    self.controller._log_message(f"转换完成: {outp}", "SUCCESS")
+                                if hasattr(self.controller, 'ui_manager'):
+                                    self.controller.ui_manager.set_status("音频转换完成")
+                            except Exception:
+                                pass
+                            messagebox.showinfo("完成", f"转换成功:\n{outp}")
+                        else:
+                            if hasattr(self.controller, '_log_message'):
+                                self.controller._log_message(f"转换失败: {err_msg or '未知错误'}", "ERROR")
+                            try:
+                                if hasattr(self.controller, 'ui_manager'):
+                                    self.controller.ui_manager.set_status("音频转换失败")
+                            except Exception:
+                                pass
+                            messagebox.showerror("失败", f"转换失败，请查看日志\n{err_msg or ''}")
+                    except Exception:
+                        pass
+                try:
+                    # 回到主线程
+                    if hasattr(self.controller, 'root') and self.controller.root:
+                        self.controller.root.after(0, _finish)
+                    else:
+                        # 若无法回调到主线程，也直接调用
+                        _finish()
+                except Exception:
+                    _finish()
+
+        try:
+            import threading
+            threading.Thread(target=_worker, daemon=True).start()
         except Exception as e:
             try:
-                self.controller._log_message(f"启动转换失败: {e}", "ERROR")
+                if hasattr(self.controller, '_log_message'):
+                    self.controller._log_message(f"启动转换失败: {e}", "ERROR")
             except Exception:
                 pass
-            btn.configure(state=tk.NORMAL)
+            try:
+                btn.configure(state=tk.NORMAL)
+            except Exception:
+                pass
 
     def _do_batch_convert(self):
         self._ensure_converter()

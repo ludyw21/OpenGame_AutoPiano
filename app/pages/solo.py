@@ -20,31 +20,23 @@ class SoloPage:
         # 容器：便于统一销毁
         self._left_container = ttk.Frame(left)
         self._left_container.pack(fill=tk.BOTH, expand=True)
-        self._right_container = ttk.Frame(right)
-        self._right_container.pack(fill=tk.BOTH, expand=True)
         # 通过控制器在容器内创建全部主界面组件
         if self.controller:
             try:
                 # 左栏
                 self.controller._create_file_selection_component(parent_left=self._left_container)
                 self.controller._create_playback_control_component(parent_left=self._left_container, include_ensemble=False)
-                self.controller._create_bottom_progress(parent_left=self._left_container)
-                # 右栏
-                self.controller._create_right_pane(parent_right=self._right_container)
+                # 右栏已移除
             except Exception:
-                # 若发生异常，提供最小占位以避免空白
+                # 若发生异常，提供最小占位以避免空白（仅左侧）
                 lf = ttk.Label(self._left_container, text="独奏模式（加载失败占位）", anchor=tk.W)
                 lf.pack(anchor=tk.NW, padx=6, pady=6)
-                rf = ttk.Label(self._right_container, text="右侧（加载失败占位）", anchor=tk.W)
-                rf.pack(anchor=tk.NW, padx=6, pady=6)
-                self._widgets = [lf, rf]
+                self._widgets = [lf]
         else:
             # 无控制器：使用占位
             lf = ttk.Label(self._left_container, text="独奏模式（占位）", anchor=tk.W)
             lf.pack(anchor=tk.NW, padx=6, pady=6)
-            rf = ttk.Label(self._right_container, text="日志/状态（占位）", anchor=tk.W)
-            rf.pack(anchor=tk.NW, padx=6, pady=6)
-            self._widgets = [lf, rf]
+            self._widgets = [lf]
 
     def unmount(self):
         for w in self._widgets:

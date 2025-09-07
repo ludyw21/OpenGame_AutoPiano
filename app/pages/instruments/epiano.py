@@ -24,20 +24,11 @@ class EPianoPage(BasePage):
 
     def mount(self, left: ttk.Frame, right: ttk.Frame):
         # 左侧：文件选择、播放控制、底部进度
+        # 顶部标题已移除，让上层分页标签占据顶部
+        inst_mode = None
         try:
-            # 标题区（显示当前模式）
-            header = ttk.Frame(left)
-            header.pack(fill=tk.X, pady=(0, 6))
-            # 按乐器独立模式（默认 solo）
-            inst_mode = None
-            try:
-                modes = getattr(self.controller, 'instrument_mode', {})
-                inst_mode = modes.get('电子琴') if isinstance(modes, dict) else None
-            except Exception:
-                pass
-            mode_text = '合奏' if inst_mode == 'ensemble' else '独奏'
-            ttk.Label(header, text=f"电子琴 · {mode_text}",
-                      font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT)
+            modes = getattr(self.controller, 'instrument_mode', {})
+            inst_mode = modes.get('电子琴') if isinstance(modes, dict) else None
         except Exception:
             pass
 
@@ -53,25 +44,18 @@ class EPianoPage(BasePage):
             except Exception:
                 pass
 
-            # 将组件都渲染在 content 内，避免与 header 共容器导致的 pack/grid 冲突
-            self.controller._create_file_selection_component(content)
+            # 文件选择已移入“控制”分页，由播放控制组件统一渲染
+            
         except Exception:
             pass
         try:
             include_ensemble = (inst_mode == 'ensemble')
-            self.controller._create_playback_control_component(content, include_ensemble=include_ensemble)
+            self.controller._create_playback_control_component(content, include_ensemble=include_ensemble, instrument='电子琴')
         except Exception:
             pass
-        try:
-            self.controller._create_bottom_progress(content)
-        except Exception:
-            pass
+        # 已移除底部进度组件，以便页面内容占满并由右侧滚动条统一控制
 
-        # 右侧：日志/状态分页
-        try:
-            self.controller._create_right_pane(right)
-        except Exception:
-            pass
+        # 右侧已移除
 
         self._mounted = True
 

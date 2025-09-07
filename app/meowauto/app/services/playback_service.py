@@ -329,11 +329,22 @@ class PlaybackService:
         ap = self.auto_player
         if not ap:
             return False
+        
+        # 添加调试日志
+        if self.logger:
+            self.logger.log(f"PlaybackService启动播放: tempo={tempo}, use_analyzed={use_analyzed}", "DEBUG")
+        
         try:
             if use_analyzed and analyzed_notes is not None and hasattr(ap, 'start_auto_play_midi_events'):
+                if self.logger:
+                    self.logger.log(f"使用已解析事件播放，事件数: {len(analyzed_notes) if analyzed_notes else 0}", "DEBUG")
                 return bool(ap.start_auto_play_midi_events(analyzed_notes, tempo=tempo, key_mapping=key_mapping, strategy_name=strategy_name))
             if hasattr(ap, 'start_auto_play_midi'):
+                if self.logger:
+                    self.logger.log(f"从MIDI文件播放: {file_path}", "DEBUG")
                 return bool(ap.start_auto_play_midi(file_path, tempo=tempo, key_mapping=key_mapping, strategy_name=strategy_name))
-        except Exception:
+        except Exception as e:
+            if self.logger:
+                self.logger.log(f"播放启动失败: {e}", "ERROR")
             return False
         return False

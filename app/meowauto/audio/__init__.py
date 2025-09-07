@@ -6,6 +6,5 @@ functionality that handles all audio-related operations.
 
 from .converter import AudioConverter
 from .midi_processor import MidiProcessor
-from .pianotrans_manager import PianoTransManager
 
-__all__ = ['AudioConverter', 'MidiProcessor', 'PianoTransManager'] 
+__all__ = ['AudioConverter', 'MidiProcessor']

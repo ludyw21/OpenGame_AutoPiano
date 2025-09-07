@@ -25,19 +25,11 @@ class GuitarPage(BasePage):
         self._mounted = False
 
     def mount(self, left: ttk.Frame, right: ttk.Frame):
-        # 左侧：标题（独奏/合奏）
+        # 顶部标题已移除，让上层分页标签占据顶部
+        inst_mode = None
         try:
-            header = ttk.Frame(left)
-            header.pack(fill=tk.X, pady=(0, 6))
-            inst_mode = None
-            try:
-                modes = getattr(self.controller, 'instrument_mode', {})
-                inst_mode = modes.get('吉他') if isinstance(modes, dict) else None
-            except Exception:
-                pass
-            mode_text = '合奏' if inst_mode == 'ensemble' else '独奏'
-            ttk.Label(header, text=f"吉他 · {mode_text}",
-                      font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT)
+            modes = getattr(self.controller, 'instrument_mode', {})
+            inst_mode = modes.get('吉他') if isinstance(modes, dict) else None
         except Exception:
             pass
 
@@ -50,25 +42,21 @@ class GuitarPage(BasePage):
                 content.grid_rowconfigure(1, weight=1)
             except Exception:
                 pass
-            # 复用与电子琴一致的组件
-            self.controller._create_file_selection_component(content)
+            # 文件选择已移入“控制”分页，由播放控制组件统一渲染
         except Exception:
             pass
         try:
             include_ensemble = (inst_mode == 'ensemble')
-            self.controller._create_playback_control_component(content, include_ensemble=include_ensemble)
+            self.controller._create_playback_control_component(content, include_ensemble=include_ensemble, instrument='吉他')
         except Exception:
             pass
         try:
-            self.controller._create_bottom_progress(content)
+            # 已移除底部进度组件
+            pass
         except Exception:
             pass
 
-        # 右侧：日志/状态分页
-        try:
-            self.controller._create_right_pane(right)
-        except Exception:
-            ttk.Label(right, text="日志/状态区（预留）").pack(anchor=tk.NW, padx=6, pady=6)
+        # 右侧已移除，不再创建
 
         self._mounted = True
 
