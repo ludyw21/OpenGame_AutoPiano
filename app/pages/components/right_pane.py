@@ -99,7 +99,18 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         for i in range(4):
             pre_frame.columnconfigure(i, weight=1)
 
-    # 4) 后处理：黑键移调 + 量化窗口 -> app._analyze_current_midi 使用
+    # 4) 预处理：最短音长过滤（仅非架子鼓）。在分部合并后、其他解析前生效。
+    if tab_settings is not None and (instrument or '').strip() not in ('架子鼓',):
+        dur_frame = ttk.LabelFrame(settings_inner, text="预处理 · 最短音长过滤", padding="8")
+        dur_frame.pack(fill=tk.X, padx=6, pady=6)
+        ttk.Label(dur_frame, text="丢弃短于(ms):").grid(row=0, column=0, sticky=tk.W, padx=4)
+        controller.min_note_duration_ms_var = tk.IntVar(value=15)
+        ttk.Spinbox(dur_frame, from_=0, to=2000, increment=10, width=10, textvariable=controller.min_note_duration_ms_var).grid(row=0, column=1, sticky=tk.W)
+        ttk.Label(dur_frame, text="0 表示关闭").grid(row=0, column=2, sticky=tk.W, padx=(12,0))
+        for i in range(3):
+            dur_frame.columnconfigure(i, weight=1)
+
+    # 5) 后处理：黑键移调 + 量化窗口 -> app._analyze_current_midi 使用
     if tab_settings is not None:
         post_frame = ttk.LabelFrame(settings_inner, text="后处理 · 黑键移调 / 量化", padding="8")
         post_frame.pack(fill=tk.X, padx=6, pady=6)
@@ -115,12 +126,12 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         for i in range(4):
             post_frame.columnconfigure(i, weight=1)
 
-    # 5) 和弦标注功能已移除，避免混淆
+    # 6) 和弦标注功能已移除，避免混淆
     if tab_settings is not None:
         # 为所有乐器设置默认禁用值
         controller.enable_chord_var = tk.BooleanVar(value=False)
 
-    # 6) 回放 · 和弦伴奏（下发至 AutoPlayer）。注意：黑键移调仅在"后处理"中提供。
+    # 7) 回放 · 和弦伴奏（下发至 AutoPlayer）。注意：黑键移调仅在"后处理"中提供。
     # 仅架子鼓禁用和弦功能；其他乐器可用
     current_instrument = (instrument or '').strip()
     show_chord_accomp = current_instrument not in ('架子鼓',)
@@ -141,7 +152,7 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         for i in range(4):
             play_frame.columnconfigure(i, weight=1)
 
-    # 7) 架子鼓禁用和弦（兜底设置）
+    # 8) 架子鼓禁用和弦（兜底设置）
     if tab_settings is not None and not show_chord_accomp:
         # 为贝斯和架子鼓设置默认值（禁用和弦）
         controller.chord_min_sustain_ms_var = tk.IntVar(value=1500)

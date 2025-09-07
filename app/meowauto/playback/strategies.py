@@ -13,6 +13,18 @@ class KeyMappingStrategy:
     def map_note(self, midi_note: int, mapping: Dict[str, str], options: Dict[str, Any]) -> Optional[str]:
         raise NotImplementedError
 
+    # 兼容层：AutoPlayer 期望的批量键映射接口
+    # note_event: { 'note': int, 'start_time': float, 'end_time': float, 'duration': float, ... }
+    # 返回：键位字符串列表；默认策略仅返回单个键（若可映射）。
+    def map_note_to_keys(self, note_event: Dict[str, Any], mapping: Dict[str, str], options: Optional[Dict[str, Any]] = None) -> List[str]:
+        try:
+            midi_note = int(note_event.get('note'))
+        except Exception:
+            return []
+        opt = options or {}
+        key = self.map_note(midi_note, mapping, opt)
+        return [key] if key else []
+
 
 class Strategy21Key(KeyMappingStrategy):
     name = "strategy_21key"

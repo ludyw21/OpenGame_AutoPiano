@@ -1051,6 +1051,29 @@ class MeowFieldAutoPiano:
                         self._log_message(f"预处理移调(手动): {chosen} 半音 | 白键占比: {ratio*100:.1f}%")
                 except Exception as exp:
                     self._log_message(f"预处理移调失败: {exp}", "WARNING")
+
+            # 预处理：最短音长过滤（仅非架子鼓；在分部合并与移调之后，其他解析前）
+            try:
+                if (getattr(self, 'current_instrument', '') != '架子鼓') and notes:
+                    min_ms = int(getattr(self, 'min_note_duration_ms_var', tk.IntVar(value=0)).get()) if hasattr(self, 'min_note_duration_ms_var') else 0
+                    if min_ms > 0:
+                        thr = max(0, min_ms) / 1000.0
+                        before_cnt = len(notes)
+                        filtered = []
+                        for n in notes:
+                            try:
+                                st = float(n.get('start_time', n.get('time', 0.0)))
+                                et = float(n.get('end_time', st))
+                                dur = max(0.0, et - st)
+                            except Exception:
+                                dur = 0.0
+                            if dur + 1e-9 >= thr:
+                                filtered.append(n)
+                        notes = filtered
+                        self._log_message(f"最短音长过滤: 丢弃 {before_cnt - len(notes)} / {before_cnt} (<{min_ms}ms)")
+            except Exception as exp:
+                self._log_message(f"最短音长过滤失败: {exp}", "WARNING")
+
             total_before = len(notes)
             self._log_message(f"原始音符数: {total_before}")
             # update channel combo with detected channels
