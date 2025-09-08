@@ -33,6 +33,11 @@ class PlaybackService:
         }
         # 最近一次分析统计（供UI展示）
         self.last_analysis_stats: Dict[str, Any] = {'k': 0, 'white_rate': None}
+        # 分部过滤：由 UI 设置，统一在服务层生效
+        self._parts_filter_keys: set[tuple[int, int]] | None = None  # {(track, channel)}
+        self._parts_filter_prog: dict[tuple[int, int], int] | None = None  # {(track,channel): program}
+        self._parts_filter_channels: set[int] | None = None  # {channel}
+        self._parts_filter_ch_prog: dict[int, int] | None = None  # {channel: program}
 
     def init_players(self) -> None:
         """延迟初始化播放器（占位）。"""
@@ -199,6 +204,102 @@ class PlaybackService:
     def get_last_analysis_stats(self) -> Dict[str, Any]:
         return dict(self.last_analysis_stats)
 
+    # —— 分部过滤 ——
+    def set_selected_parts_filter(self, parts: dict | None, selected_names: list | set | None) -> None:
+        """接收分部与勾选清单，生成 (track,channel) 与 program 过滤条件。
+        传入 None 或空集将清除过滤。
+        """
+        try:
+            if not parts or not selected_names:
+                self._parts_filter_keys = None
+                self._parts_filter_prog = None
+                self._parts_filter_channels = None
+                self._parts_filter_ch_prog = None
+                if self.logger:
+                    self.logger.log("[DEBUG] 分部过滤: 已清除（未提供分部或选择为空）", "DEBUG")
+                return
+            keys: set[tuple[int, int]] = set()
+            prog_map: dict[tuple[int, int], int] = {}
+            ch_set: set[int] = set()
+            ch_prog: dict[int, int] = {}
+            for name in selected_names:
+                sec = parts.get(name)
+                if not sec:
+                    continue
+                meta = getattr(sec, 'meta', {}) if hasattr(sec, 'meta') else (sec.get('meta', {}) if isinstance(sec, dict) else {})
+                tr = meta.get('track'); ch = meta.get('channel'); pg = meta.get('program')
+                if ch is not None:
+                    ch_i = int(ch)
+                    ch_set.add(ch_i)
+                    if pg is not None:
+                        ch_prog[ch_i] = int(pg)
+                if tr is not None and ch is not None:
+                    key = (int(tr), int(ch))
+                    keys.add(key)
+                    if pg is not None:
+                        prog_map[key] = int(pg)
+            self._parts_filter_keys = keys or None
+            self._parts_filter_prog = prog_map or None
+            self._parts_filter_channels = ch_set or None
+            self._parts_filter_ch_prog = ch_prog or None
+            if self.logger:
+                self.logger.log(
+                    f"[DEBUG] 分部过滤: keys={len(self._parts_filter_keys or [])}, prog_keys={len(self._parts_filter_prog or {})}, "
+                    f"channels={len(self._parts_filter_channels or [])}, ch_prog={len(self._parts_filter_ch_prog or {})}",
+                    "DEBUG"
+                )
+        except Exception:
+            self._parts_filter_keys = None
+            self._parts_filter_prog = None
+            self._parts_filter_channels = None
+            self._parts_filter_ch_prog = None
+
+    def _apply_parts_filter(self, notes: List[Dict]) -> List[Dict]:
+        """基于 (track,channel)[+program] 过滤事件；若过滤结果为空，则回退为原 notes。"""
+        try:
+            if not notes:
+                return notes
+            keys = self._parts_filter_keys
+            prog = self._parts_filter_prog or {}
+            chs = self._parts_filter_channels
+            ch_prog = self._parts_filter_ch_prog or {}
+            if not keys and not chs:
+                return notes
+            def keep(n: Dict) -> bool:
+                try:
+                    c_val = n.get('channel')
+                    c = int(c_val) if c_val is not None else None
+                    t_val = n.get('track')
+                    t = int(t_val) if t_val is not None else None
+                    p_has = n.get('program')
+                    # 1) 优先使用 (track,channel) 精确匹配
+                    if t is not None and c is not None and keys:
+                        if (t, c) not in keys:
+                            return False
+                        p_need = prog.get((t, c))
+                        return True if p_need is None else ((p_has is None) or int(p_has) == int(p_need))
+                    # 2) 退回到“仅按通道”匹配（当 notes 无 track 字段时）
+                    if c is not None and chs:
+                        if c not in chs:
+                            return False
+                        p_need2 = ch_prog.get(c)
+                        return True if p_need2 is None else ((p_has is None) or int(p_has) == int(p_need2))
+                    # 无法判定：保守丢弃
+                    return False
+                except Exception:
+                    return False
+            filtered = [n for n in notes if keep(n)]
+            if filtered:
+                if self.logger:
+                    self.logger.log(f"[DEBUG] 分部过滤生效: 输入={len(notes)} 输出={len(filtered)}", "DEBUG")
+                return filtered
+            # 回退防无声
+            if self.logger:
+                self.logger.log("[DEBUG] 分部过滤后为空，回退为原始事件", "WARN")
+            return notes
+        except Exception:
+            return notes
+
     # ===== 时钟注入 =====
     def set_clock_provider(self, provider: Any) -> None:
         """设置/替换 ClockProvider，并尝试下发给 AutoPlayer（若支持）。"""
@@ -266,6 +367,16 @@ class PlaybackService:
             if not isinstance(parts, dict) or not parts:
                 return False
 
+            # 日志：选择概况
+            if self.logger:
+                try:
+                    self.logger.log(
+                        f"[DEBUG] 分部播放请求: 选中分部={selected_names if selected_names else '全部'}, include_roles={include_roles}",
+                        "DEBUG"
+                    )
+                except Exception:
+                    pass
+
             names = list(selected_names) if selected_names else list(parts.keys())
             notes: list = []
 
@@ -329,6 +440,20 @@ class PlaybackService:
             if not notes:
                 return False
 
+            # 统一前置：短音过滤 + 自动整体移调（与普通播放一致，不绕过）
+            notes2 = self._apply_pre_filters_and_transpose(notes)
+            if self.logger:
+                try:
+                    stats = self.get_last_analysis_stats()
+                    self.logger.log(
+                        f"[DEBUG] 分部预处理完成: 输入={len(notes)}, 输出={len(notes2)}, k={stats.get('k')}, 白键率={stats.get('white_rate')}",
+                        "DEBUG"
+                    )
+                except Exception:
+                    pass
+            if not notes2:
+                return False
+
             # 绑定进度回调
             if on_progress is not None:
                 try:
@@ -361,7 +486,11 @@ class PlaybackService:
                     except Exception:
                         role_keymaps = {}
 
-            return bool(ap.start_auto_play_midi_events_mixed(notes, tempo=tempo, role_keymaps=role_keymaps, strategy_name=strategy_name))
+            # 进入混合映射入口
+            ok = bool(ap.start_auto_play_midi_events_mixed(notes2, tempo=tempo, role_keymaps=role_keymaps, strategy_name=strategy_name))
+            if self.logger and not ok:
+                self.logger.log("[DEBUG] 分部播放启动失败", "ERROR")
+            return ok
         except Exception:
             return False
 
@@ -518,6 +647,8 @@ class PlaybackService:
             if use_analyzed and analyzed_notes is not None and hasattr(ap, 'start_auto_play_midi_events'):
                 # 即便传入已解析事件，也必须走统一的“过滤+自动移调”前置处理
                 notes_in = list(analyzed_notes or [])
+                # 分部过滤（若有）
+                notes_in = self._apply_parts_filter(notes_in)
                 notes2 = self._apply_pre_filters_and_transpose(notes_in)
                 if self.logger:
                     stats = self.get_last_analysis_stats()
@@ -543,6 +674,8 @@ class PlaybackService:
                     self.logger.log(f"解析MIDI失败: {res.get('error') if isinstance(res, dict) else 'unknown'}", "ERROR")
                 return False
             notes = res.get('notes') or []
+            # 分部过滤（若有）
+            notes = self._apply_parts_filter(notes)
             # 解析来源与时序信息输出（用于诊断速度/时间问题）
             try:
                 src = res.get('source')

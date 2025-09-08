@@ -314,6 +314,54 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                 if not isinstance(res, dict) or not res.get('ok'):
                     return
                 notes = res.get('notes') or []
+                # 若存在分部选择，则按所选分部进行事件级过滤（不绕过统一流程）
+                try:
+                    sel = getattr(controller, '_selected_part_names', set()) or set()
+                    parts = getattr(controller, '_last_split_parts', {}) or {}
+                    if sel and parts and notes:
+                        # 收集选中分部的 (track, channel) 组合（program 作为加权条件）
+                        sel_keys = set()
+                        prog_map = {}
+                        for name in sel:
+                            sec = parts.get(name)
+                            if not sec:
+                                continue
+                            meta = getattr(sec, 'meta', {}) if hasattr(sec, 'meta') else (sec.get('meta', {}) if isinstance(sec, dict) else {})
+                            tr = meta.get('track'); ch = meta.get('channel'); pg = meta.get('program')
+                            if tr is None or ch is None:
+                                continue
+                            sel_keys.add((int(tr), int(ch)))
+                            if pg is not None:
+                                prog_map[(int(tr), int(ch))] = int(pg)
+                        if sel_keys:
+                            def _keep(n):
+                                try:
+                                    t = int(n.get('track'))
+                                    c = int(n.get('channel'))
+                                    if (t, c) not in sel_keys:
+                                        return False
+                                    p_need = prog_map.get((t, c))
+                                    if p_need is None:
+                                        return True
+                                    p_has = n.get('program')
+                                    return (p_has is None) or int(p_has) == int(p_need)
+                                except Exception:
+                                    return False
+                            filtered = [n for n in notes if _keep(n)]
+                            # 若过滤后为空，为避免“无声”误伤，回退为原notes；同时打印提示
+                            if filtered:
+                                notes = filtered
+                                try:
+                                    controller._log_message(f"[DEBUG] 分部过滤: 选择{len(sel)}个分部，保留事件 {len(notes)} 条", "DEBUG")
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    controller._log_message("[DEBUG] 分部过滤结果为空，回退为全曲事件", "WARN")
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
                 # 应用当前设置（调用服务内部预处理计算统计）
                 if hasattr(ps, '_apply_pre_filters_and_transpose'):
                     processed = ps._apply_pre_filters_and_transpose(notes)  # 计算并更新 last_analysis_stats
@@ -329,8 +377,8 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                 pass
 
         def _schedule_compute_white_rate(delay_ms: int = 300):
+            """防抖调度白键率计算，避免频繁重算。"""
             try:
-                # 构建一次防抖调度
                 if hasattr(controller, 'root') and getattr(controller, 'root', None):
                     if getattr(controller, '_calc_white_rate_job', None):
                         try:
@@ -339,10 +387,16 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                             pass
                     controller._calc_white_rate_job = controller.root.after(delay_ms, _compute_white_rate_now)
                 else:
-                    # 无 root 时直接执行
                     _compute_white_rate_now()
             except Exception:
                 pass
+
+        # 暴露给 controller，供其他组件安全调用
+        try:
+            controller._compute_white_rate_now = _compute_white_rate_now
+            controller._schedule_compute_white_rate = _schedule_compute_white_rate
+        except Exception:
+            pass
 
         ttk.Button(parse_settings, text="计算白键率", command=_compute_white_rate_now).grid(row=2, column=2, sticky=tk.W, pady=(8,0))
 
@@ -375,7 +429,10 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                     except Exception:
                         pass
                     # 引擎改变后，重新计算白键率
-                    _schedule_compute_white_rate(100)
+                    try:
+                        (getattr(controller, '_schedule_compute_white_rate', None) or _schedule_compute_white_rate)(100)
+                    except Exception:
+                        _schedule_compute_white_rate(100)
                 except Exception:
                     pass
 
@@ -403,7 +460,10 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                 except Exception:
                     pass
                 # 自动触发一次“白键率计算”（防抖），做到每次设置变更即计算并刷新显示
-                _schedule_compute_white_rate(300)
+                try:
+                    (getattr(controller, '_schedule_compute_white_rate', None) or _schedule_compute_white_rate)(300)
+                except Exception:
+                    _schedule_compute_white_rate(300)
             except Exception:
                 pass
 
@@ -431,9 +491,15 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                 except Exception:
                     pass
                 # 立即计算一次，确保UI即时显示白键率/k
-                _compute_white_rate_now()
+                try:
+                    (getattr(controller, '_compute_white_rate_now', None) or _compute_white_rate_now)()
+                except Exception:
+                    _compute_white_rate_now()
                 # 再调度一次，兜底刷新
-                _schedule_compute_white_rate(200)
+                try:
+                    (getattr(controller, '_schedule_compute_white_rate', None) or _schedule_compute_white_rate)(200)
+                except Exception:
+                    _schedule_compute_white_rate(200)
 
             # 绑定到 controller，便于其他文件调用
             controller._on_midi_path_changed = _on_midi_path_changed
@@ -614,7 +680,36 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     # 工具栏：识别 + 批量选择 + 拆分模式
     part_toolbar = ttk.Frame(part_frame)
     part_toolbar.pack(side=tk.TOP, fill=tk.X)
-    ttk.Button(part_toolbar, text="识别分部", style=styles['info'], command=getattr(controller, '_ui_select_partitions', lambda: None)).pack(side=tk.LEFT)
+    # 内置识别分部：按 轨/通道/音色 分离，并自动填充表格
+    def _identify_parts():
+        try:
+            # 使用 PlaybackController 的 split 能力
+            pc = getattr(controller, 'playback_controller', None)
+            midi_path = getattr(controller, 'midi_path_var', None).get() if hasattr(controller, 'midi_path_var') else ''
+            if not pc or not midi_path:
+                return
+            parts = pc.split_midi_by_track_channel(midi_path)
+            controller._last_split_parts = parts or {}
+            # 自动根据乐器偏好勾选（非鼓勾选非 ch9；鼓勾选 ch9）
+            controller._selected_part_names = set()
+            _refresh_parts_tree()
+            _auto_select_parts()
+            _refresh_parts_tree()
+            # 将当前选择推送到服务层过滤器
+            try:
+                ps = getattr(controller, 'playback_service', None)
+                if ps and hasattr(ps, 'set_selected_parts_filter'):
+                    sel = list(getattr(controller, '_selected_part_names', set()) or [])
+                    ps.set_selected_parts_filter(getattr(controller, '_last_split_parts', {}) or {}, sel)
+            except Exception:
+                pass
+            try:
+                controller._log_message(f"分部识别完成: {len(parts)} 个", "INFO")
+            except Exception:
+                pass
+        except Exception:
+            pass
+    ttk.Button(part_toolbar, text="识别分部", style=styles['info'], command=_identify_parts).pack(side=tk.LEFT)
     ttk.Button(part_toolbar, text="全选", style=styles['primary'], command=getattr(controller, '_ui_parts_select_all', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
     ttk.Button(part_toolbar, text="全不选", style=styles['warning'], command=getattr(controller, '_ui_parts_select_none', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
     ttk.Button(part_toolbar, text="反选", style=styles['secondary'], command=getattr(controller, '_ui_parts_select_invert', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
@@ -664,11 +759,24 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
             if not vals or len(vals) < 2:
                 return
             name = vals[1]
-            checked = bool(controller._parts_checked.get(name, False))
-            checked = not checked
-            controller._parts_checked[name] = checked
-            vals[0] = '☑' if checked else '☐'
+            sel = getattr(controller, '_selected_part_names', set()) or set()
+            if name in sel:
+                sel.remove(name)
+                vals[0] = '□'
+            else:
+                sel.add(name)
+                vals[0] = '■'
+            controller._selected_part_names = sel
             parts_tree.item(row, values=vals)
+            # 将选择推送到服务层过滤器（空集合将清除过滤）
+            try:
+                ps = getattr(controller, 'playback_service', None)
+                if ps and hasattr(ps, 'set_selected_parts_filter'):
+                    ps.set_selected_parts_filter(getattr(controller, '_last_split_parts', {}) or {}, list(sel))
+            except Exception:
+                pass
+            # 勾选变化后，立即重新计算白键率缓存（不播放）
+            _schedule_compute_white_rate(100)
         except Exception:
             pass
     parts_tree.bind('<Button-1>', _on_parts_tree_click)
