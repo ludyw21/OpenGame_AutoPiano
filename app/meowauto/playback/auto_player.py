@@ -46,9 +46,12 @@ class AutoPlayer:
             'black_transpose_strategy': 'nearest',
             'enable_key_fallback': True,
             'tap_gap_ms': 0,
+            # 手动整曲移调（仅当 enable_pretranspose=True 时生效）
+            'enable_pretranspose': False,
+            'pretranspose_semitones': 0,
             # 多轨/多分部短时间内多键处理策略：'arpeggio' | 'merge' | 'original'
             'multi_key_cluster_mode': 'merge',
-            'multi_key_cluster_window_ms': 50,
+            'multi_key_cluster_window_ms': 240,
         }
         self.playback_callbacks = {
             'on_start': None,
@@ -109,53 +112,12 @@ class AutoPlayer:
     def start_auto_play_midi(self, midi_file: str, tempo: float = 1.0, 
                            key_mapping: Dict[str, str] = None,
                            strategy_name: Optional[str] = None) -> bool:
-        """开始自动演奏（MIDI模式）
-        解析 MIDI -> 展开为 note_on/note_off 事件 -> 直接走映射事件线程（逐事件调度，无同窗批处理）。
-        """
-        if self.is_playing:
-            self.logger.log("自动演奏已在进行中", "WARNING")
-            return False
-        
-        if not midi_file:
-            self.logger.log("MIDI文件路径为空", "ERROR")
-            return False
-        
-        # 解析并展开为事件，再使用“已映射事件线程”播放，避免旧的批处理逻辑
-        events = self._parse_midi_file(midi_file, key_mapping=key_mapping, strategy_name=strategy_name)
-        if not events:
-            return False
-
-        # 去重：同一时刻映射到同一键位的重复事件只保留一个
+        """已禁用：为避免绕过统一 pretty_midi 解析管线，此入口不再使用。"""
         try:
-            events = self._dedup_same_time_same_key(events)
+            self.logger.log("已禁用的播放入口: start_auto_play_midi 被阻止。请使用基于解析后的事件入口。", "WARNING")
         except Exception:
             pass
-        # 多键窗口规范化（琶音/合并/原样）
-        try:
-            events = self._normalize_multi_key_clusters(events)
-        except Exception:
-            pass
-        # 对同一时间戳，保证 note_off 先于 note_on
-        try:
-            events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
-        except Exception:
-            pass
-
-        self.current_tempo = tempo
-        self.is_playing = True
-        self.is_paused = False
-        self.play_thread = threading.Thread(target=self._auto_play_mapped_events_thread, args=(events,))
-        self.play_thread.daemon = True
-        self.play_thread.start()
-        
-        # 调用开始回调
-        if self.playback_callbacks['on_start']:
-            self.playback_callbacks['on_start']()
-        
-        self.logger.log("开始自动演奏（MIDI模式，经解析后逐事件调度）", "INFO")
-        if self.debug:
-            self.logger.log(f"[DEBUG] 文件: {midi_file}, 展开事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
-        return True
+        return False
 
     def start_auto_play_midi_drums(self, midi_file: str, tempo: float = 1.0,
                                    key_mapping: Optional[Dict[str, str]] = None) -> bool:
@@ -244,8 +206,9 @@ class AutoPlayer:
                                     key_mapping: Dict[str, str] = None,
                                     strategy_name: Optional[str] = None) -> bool:
         """开始自动演奏（使用外部解析后的MIDI音符事件）
-        期望 notes 为带有 start_time/end_time/note/channel 的列表。本方法会按固定21键映射展开为 note_on/note_off 事件，
-        并直接进入回放线程，不再进行黑键移调或量化等后处理。
+        期望 notes 为带有 start_time/end_time/note/channel 的列表。
+        注意：pretty_midi解析的start_time已经是考虑了原始MIDI tempo的准确秒数，
+        这里的tempo参数仅用于用户倍速调整，不应对时间进行二次tempo处理。
         """
         if self.is_playing:
             self.logger.log("自动演奏已在进行中", "WARNING")
@@ -319,19 +282,52 @@ class AutoPlayer:
             self.logger.log("展开后的回放事件为空", "ERROR")
             return False
 
+        # DEBUG: 打印前若干条映射结果（note -> key），用于快速核对映射/移调是否生效
+        if self.debug:
+            try:
+                previews = []
+                seen = 0
+                for ev in events:
+                    if ev.get('type') != 'note_on':
+                        continue
+                    previews.append(f"note={ev.get('note')} -> key={ev.get('key')}")
+                    seen += 1
+                    if seen >= 10:
+                        break
+                if previews:
+                    self.logger.log("[DEBUG] 映射预览: " + ", ".join(previews), "DEBUG")
+            except Exception:
+                pass
+
+        # 去重 + 多键窗口规范化 + 对同一时间戳，保证 note_off 先于 note_on
+        try:
+            events = self._dedup_same_time_same_key(events)
+        except Exception:
+            pass
+        try:
+            events = self._normalize_multi_key_clusters(events)
+        except Exception:
+            pass
+        try:
+            events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
+        except Exception:
+            pass
+
         # 设置状态并启动线程
         self.current_tempo = tempo
         self.is_playing = True
         self.is_paused = False
+        # 标记使用pretty_midi事件，用于正确的tempo处理
+        self._using_pretty_midi_events = True
         self.play_thread = threading.Thread(target=self._auto_play_mapped_events_thread, args=(events,))
-        self.play_thread.daemon = True
         self.play_thread.start()
-
-        if self.playback_callbacks['on_start']:
+        
+        # 启动回调
+        if 'on_start' in self.playback_callbacks:
             self.playback_callbacks['on_start']()
-        self.logger.log("开始自动演奏（外部MIDI事件）", "INFO")
+        self.logger.log("开始自动演奏（外部解析事件）", "INFO")
         if self.debug:
-            self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
+            self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}, pretty_midi模式", "DEBUG")
         return True
 
     def start_auto_play_midi_events_mixed(self, notes: List[Dict[str, Any]], tempo: float = 1.0,
@@ -416,26 +412,30 @@ class AutoPlayer:
         try:
             events.sort(key=lambda x: (x['start_time'], 0 if x.get('type') == 'note_off' else 1))
         except Exception:
-            events.sort(key=lambda x: x['start_time'])
-
+            pass
+        # 启动播放（与 start_auto_play_midi_events 结尾保持一致逻辑）
         if not events:
             self.logger.log("展开后的回放事件为空", "ERROR")
             return False
 
+        # 设置状态并启动线程
         self.current_tempo = tempo
         self.is_playing = True
         self.is_paused = False
+        # 标记使用 pretty_midi 事件，避免二次 tempo 处理
+        self._using_pretty_midi_events = True
         self.play_thread = threading.Thread(target=self._auto_play_mapped_events_thread, args=(events,))
         self.play_thread.daemon = True
         self.play_thread.start()
 
+        # 启动回调与日志
         if self.playback_callbacks['on_start']:
             self.playback_callbacks['on_start']()
-        self.logger.log("开始自动演奏（外部MIDI事件-按角色混合映射）", "INFO")
+        self.logger.log("开始自动演奏（外部解析事件-角色混合映射）", "INFO")
         if self.debug:
-            self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}", "DEBUG")
+            self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}, pretty_midi模式(mixed)", "DEBUG")
         return True
-    
+
     def stop_auto_play(self):
         """停止自动演奏"""
         if not self.is_playing:
@@ -443,6 +443,9 @@ class AutoPlayer:
         
         self.is_playing = False
         self.is_paused = False
+        
+        # 清除pretty_midi标记
+        self._using_pretty_midi_events = False
         
         # 等待线程结束
         if self.play_thread and self.play_thread.is_alive():
@@ -620,10 +623,17 @@ class AutoPlayer:
                     time.sleep(0.01)
 
                 ev = events[idx]
-                # 播放速度计算：用户速度倍率应该是除法
-                # current_tempo > 1.0 时播放更快（时间间隔更短）
-                # current_tempo < 1.0 时播放更慢（时间间隔更长）
-                group_time = ev['start_time'] / max(0.01, self.current_tempo)
+                # 对于pretty_midi解析的事件，start_time已经是考虑了原始MIDI tempo的准确秒数
+                # 只需要应用用户的倍速设置：tempo > 1.0播放更快，tempo < 1.0播放更慢
+                if hasattr(self, '_using_pretty_midi_events') and self._using_pretty_midi_events:
+                    # pretty_midi事件：时间已经是准确的秒数，严格按时间播放
+                    # 当tempo=1.0时，直接使用原始时间；当tempo!=1.0时，按倍速调整
+                    group_time = ev['start_time'] / max(0.01, self.current_tempo)
+                    if self.debug and idx < 3:
+                        self.logger.log(f"[DEBUG] pretty_midi事件 {idx}: 原始时间={ev['start_time']:.4f}s, 调整后={group_time:.4f}s, tempo={self.current_tempo}", "DEBUG")
+                else:
+                    # 传统事件：使用原有的tempo处理逻辑
+                    group_time = ev['start_time'] / max(0.01, self.current_tempo)
 
                 # 分级等待到目标时间（考虑提前量）
                 target = max(0.0, group_time - send_ahead)
@@ -778,6 +788,11 @@ class AutoPlayer:
             
             # 处理所有消息
             active_notes = {}
+            # 短音过滤已在MIDI解析阶段完成，此处不再重复过滤
+            dropped_pairs = 0
+            dropped_unfinished = 0
+            total_pairs = 0
+            total_unfinished = 0
             
             for msg_info in all_messages:
                 msg = msg_info['msg']
@@ -805,13 +820,24 @@ class AutoPlayer:
                         # 转换为绝对时间（秒），使用 tempo 表精确换算
                         start_time = tick_to_seconds(start_info['start_time'])
                         end_time = tick_to_seconds(track_time)
+                        duration = max(0.0, end_time - start_time)
+                        total_pairs += 1
                         
+                        # 预处理：手动整曲移调
+                        note_for_map = msg.note
+                        if bool(self.options.get('enable_pretranspose', False)):
+                            try:
+                                shift = int(self.options.get('pretranspose_semitones', 0))
+                                note_for_map = max(0, min(127, int(note_for_map) + shift))
+                            except Exception:
+                                pass
+
                         # 应用键位映射
                         mapped_keys = strategy.map_note_to_keys({
                             'start_time': start_time,
                             'end_time': end_time,
-                            'duration': end_time - start_time,
-                            'note': msg.note,
+                            'duration': duration,
+                            'note': note_for_map,
                             'velocity': start_info['velocity'],
                             'channel': start_info['channel']
                         }, key_mapping)
@@ -825,7 +851,7 @@ class AutoPlayer:
                                     'key': key,
                                     'velocity': start_info['velocity'],
                                     'channel': start_info['channel'],
-                                    'note': msg.note
+                                    'note': note_for_map
                                 })
                                 
                                 # 添加释放事件
@@ -835,7 +861,7 @@ class AutoPlayer:
                                     'key': key,
                                     'velocity': 0,
                                     'channel': getattr(msg, 'channel', 0),
-                                    'note': msg.note
+                                    'note': note_for_map
                                 })
             
             # 处理未结束的音符（设置合理的持续时间）
@@ -850,12 +876,22 @@ class AutoPlayer:
                     duration = 0.3
                 
                 end_time = start_time + duration
+                total_unfinished += 1
                 
+                # 预处理：手动整曲移调
+                note_for_map = note
+                if bool(self.options.get('enable_pretranspose', False)):
+                    try:
+                        shift = int(self.options.get('pretranspose_semitones', 0))
+                        note_for_map = max(0, min(127, int(note_for_map) + shift))
+                    except Exception:
+                        pass
+
                 mapped_keys = strategy.map_note_to_keys({
                     'start_time': start_time,
                     'end_time': end_time,
                     'duration': duration,
-                    'note': note,
+                    'note': note_for_map,
                     'velocity': info['velocity'],
                     'channel': info['channel']
                 }, key_mapping)
@@ -869,7 +905,7 @@ class AutoPlayer:
                             'key': key,
                             'velocity': info['velocity'],
                             'channel': info['channel'],
-                            'note': note
+                            'note': note_for_map
                         })
                         
                         # 添加释放事件
@@ -879,7 +915,7 @@ class AutoPlayer:
                             'key': key,
                             'velocity': 0,
                             'channel': info['channel'],
-                            'note': note
+                            'note': note_for_map
                         })
             
             # 按时间排序
@@ -911,6 +947,9 @@ class AutoPlayer:
                     pass
 
             # 预处理：黑键移调与量化（采用版本2的方案）
+            # 短音过滤已在MIDI解析阶段完成
+            if self.debug:
+                self.logger.log(f"短音过滤已在MIDI解析阶段完成，此处跳过", "INFO")
             if bool(self.options.get('enable_black_transpose', True)):
                 events = midi_tools.transpose_black_keys(events, strategy=str(self.options.get('black_transpose_strategy', 'down')))
 

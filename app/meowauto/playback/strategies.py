@@ -35,15 +35,15 @@ class Strategy21Key(KeyMappingStrategy):
         self.degrees = ["1", "2", "3", "4", "5", "6", "7"]
 
     def map_note(self, midi_note: int, mapping: Dict[str, str], options: Dict[str, Any]) -> Optional[str]:
-        # Heuristic similar to previous implementation: map into L/M/H and nearest degree
-        # Assume C major-like white-key degrees, with fallback if exact not present.
+        """度数映射（C大调白键度数），层窗口与旧版保持一致：
+        L: [48..59], M: [60..71], H: [72..83]；超界分别夹紧到48或83。
+        在层内按最近白键（C D E F G A B -> 1..7）映射，保留近邻/跨层回退。
+        """
         enable_fallback = bool(options.get('enable_key_fallback', True))
-        # Use middle C (60) as M1 reference; 12 semitone per octave
-        # Build candidate degree by pitch class distance to white keys
-        # Simple mapping window: L: [48..59], M: [60..71], H: [72..83]
+        # 选择层与层内夹紧
         if midi_note < 48:
             region = "L"
-            note_in_region = max(48, midi_note)
+            note_in_region = 48
         elif midi_note < 60:
             region = "L"
             note_in_region = midi_note
@@ -53,19 +53,18 @@ class Strategy21Key(KeyMappingStrategy):
         else:
             region = "H"
             note_in_region = min(83, midi_note)
-        # Map to degree 1..7 via nearest white-key step in C
-        white_pc_order = [0, 2, 4, 5, 7, 9, 11]  # C D E F G A B
+        # 最近白键度数（按C调白键）
+        white_pc_order = [0, 2, 4, 5, 7, 9, 11]
         pc = note_in_region % 12
-        # Choose nearest white key
         nearest = min(white_pc_order, key=lambda w: min((pc - w) % 12, (w - pc) % 12))
-        idx = white_pc_order.index(nearest)  # 0..6
+        idx = white_pc_order.index(nearest)
         key_name = f"{region}{self.degrees[idx]}"
         key = mapping.get(key_name)
         if key:
             return key
         if not enable_fallback:
             return None
-        # Fallback: try neighbors within same region, then other regions
+        # 同层近邻度数回退
         for d in range(1, 4):
             for sign in (-1, 1):
                 j = idx + sign * d
@@ -73,7 +72,7 @@ class Strategy21Key(KeyMappingStrategy):
                     k = mapping.get(f"{region}{self.degrees[j]}")
                     if k:
                         return k
-        # Cross-region fallbacks
+        # 跨层回退（优先中层）
         for reg in ("M", "L", "H"):
             for j in range(7):
                 k = mapping.get(f"{reg}{self.degrees[j]}")

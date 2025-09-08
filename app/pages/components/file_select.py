@@ -17,6 +17,12 @@ def create_file_selection(controller, parent_left):
 
     ttk.Label(file_frame, text="MIDI文件:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
     controller.midi_path_var = tk.StringVar()
+    # 绑定路径变更钩子（若控制器提供），以便导入后立即计算白键率
+    try:
+        if hasattr(controller, '_on_midi_path_changed') and callable(controller._on_midi_path_changed):
+            controller.midi_path_var.trace_add('write', controller._on_midi_path_changed)
+    except Exception:
+        pass
     midi_entry = ttk.Entry(file_frame, textvariable=controller.midi_path_var, width=50)
     midi_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
     ttk.Button(file_frame, text="浏览", command=controller._browse_midi).grid(row=0, column=2)

@@ -1011,40 +1011,44 @@ class MeowFieldAutoPiano:
                 messagebox.showerror("错误", f"解析失败: {res.get('error')}")
                 return
             notes = res.get('notes', [])
-            # 若用户已在主界面选择了分部，则优先用所选分部的事件集合作为后续分析输入
-            try:
-                if isinstance(getattr(self, '_selected_part_names', None), set) and self._selected_part_names and isinstance(getattr(self, '_last_split_parts', None), dict):
-                    merged: list[dict] = []
-                    for name in self._selected_part_names:
-                        sec = self._last_split_parts.get(name)
-                        if sec and isinstance(sec, dict):
-                            evs = sec.get('notes') or []
-                        else:
-                            # dataclass PartSection 也可能以对象形式存储
-                            evs = getattr(sec, 'notes', []) if sec is not None else []
-                        if isinstance(evs, list):
-                            merged.extend([e for e in evs if isinstance(e, dict)])
-                    if merged:
-                        self._log_message(f"使用所选分部进行分析: {', '.join(sorted(self._selected_part_names))} | 事件数: {len(merged)}")
-                        notes = merged
-            except Exception:
-                pass
-            # 预处理：整曲移调（优先自动选择白键占比最高的移调）
+            # 分部选择功能暂时禁用，直接使用pretty_midi解析的完整音符数据
+            # TODO: 需要重新实现分部选择以兼容pretty_midi数据格式
+            self._log_message(f"使用pretty_midi完整解析: {len(notes)} 个音符")
+            if hasattr(self, '_selected_part_names') and self._selected_part_names:
+                self._log_message("注意: 分部选择功能暂时禁用，使用完整MIDI数据", "WARNING")
+            # 预处理：整曲移调（手动优先；否则自动；否则按手动值）
             if bool(getattr(self, 'enable_preproc_var', tk.BooleanVar(value=False)).get()) and notes:
                 try:
-                    if bool(getattr(self, 'pretranspose_auto_var', tk.BooleanVar(value=True)).get()):
+                    # 确保 UI 变量存在
+                    if not hasattr(self, 'pretranspose_semitones_var'):
+                        self.pretranspose_semitones_var = tk.IntVar(value=0)
+                    if not hasattr(self, 'pretranspose_white_ratio_var'):
+                        self.pretranspose_white_ratio_var = tk.StringVar(value="-")
+                    manual_val = 0
+                    try:
+                        manual_val = int(self.pretranspose_semitones_var.get())
+                    except Exception:
+                        manual_val = 0
+                    auto_enabled = bool(getattr(self, 'pretranspose_auto_var', tk.BooleanVar(value=True)).get())
+
+                    if manual_val != 0:
+                        # 手动半音优先（即使自动开启）
+                        chosen = manual_val
+                        notes = self._transpose_notes(notes, chosen)
+                        ratio = self._white_key_ratio(notes)
+                        self.pretranspose_white_ratio_var.set(f"{ratio*100:.1f}%")
+                        self._log_message(f"预处理移调(手动优先): {chosen} 半音 | 白键占比: {ratio*100:.1f}%")
+                    elif auto_enabled:
+                        # 自动选择
                         chosen, best_ratio = self._auto_choose_best_transpose(notes)
-                        # 应用自动选择的结果
                         auto_notes = getattr(self, '_auto_transposed_notes_cache', None)
-                        if auto_notes:
-                            notes = auto_notes
-                        else:
-                            notes = self._transpose_notes(notes, chosen)
+                        notes = auto_notes if auto_notes else self._transpose_notes(notes, chosen)
                         self.pretranspose_semitones_var.set(chosen)
                         self.pretranspose_white_ratio_var.set(f"{best_ratio*100:.1f}%")
                         self._log_message(f"预处理移调(自动): {chosen} 半音 | 白键占比: {best_ratio*100:.1f}%")
                     else:
-                        chosen = int(getattr(self, 'pretranspose_semitones_var', tk.IntVar(value=0)).get())
+                        # 手动值（可能为0）
+                        chosen = manual_val
                         notes = self._transpose_notes(notes, chosen)
                         ratio = self._white_key_ratio(notes)
                         self.pretranspose_white_ratio_var.set(f"{ratio*100:.1f}%")
@@ -1052,25 +1056,90 @@ class MeowFieldAutoPiano:
                 except Exception as exp:
                     self._log_message(f"预处理移调失败: {exp}", "WARNING")
 
-            # 预处理：最短音长过滤（仅非架子鼓；在分部合并与移调之后，其他解析前）
+            # 预处理：最短音长过滤（仅非架子鼓；在整曲移调之后、其他解析前）
             try:
                 if (getattr(self, 'current_instrument', '') != '架子鼓') and notes:
-                    min_ms = int(getattr(self, 'min_note_duration_ms_var', tk.IntVar(value=0)).get()) if hasattr(self, 'min_note_duration_ms_var') else 0
+                    # 确保正确获取UI设置的短音过滤阈值
+                    if hasattr(self, 'min_note_duration_ms_var') and self.min_note_duration_ms_var is not None:
+                        try:
+                            min_ms = int(self.min_note_duration_ms_var.get())
+                        except Exception:
+                            min_ms = 0
+                    else:
+                        min_ms = 0
+                    self._log_message(f"短音过滤阈值: {min_ms}ms (乐器: {getattr(self, 'current_instrument', '')})", "INFO")
                     if min_ms > 0:
                         thr = max(0, min_ms) / 1000.0
                         before_cnt = len(notes)
                         filtered = []
+                        dropped = 0
+                        
+                        # 添加音符时长分析
+                        durations = []
+                        for n in notes[:10]:  # 分析前10个音符的时长
+                            try:
+                                dur = float(n.get('duration', 0.0))
+                                if dur <= 0:
+                                    start_time = float(n.get('start_time', 0.0))
+                                    end_time = float(n.get('end_time', start_time))
+                                    dur = max(0.0, end_time - start_time)
+                                durations.append(dur * 1000)  # 转换为毫秒
+                            except Exception:
+                                pass
+                        
+                        if durations:
+                            avg_dur = sum(durations) / len(durations)
+                            min_dur = min(durations)
+                            max_dur = max(durations)
+                            self._log_message(f"[DEBUG] 音符时长分析: 平均{avg_dur:.1f}ms, 最短{min_dur:.1f}ms, 最长{max_dur:.1f}ms, 阈值{min_ms}ms", "DEBUG")
+                        
                         for n in notes:
                             try:
-                                st = float(n.get('start_time', n.get('time', 0.0)))
-                                et = float(n.get('end_time', st))
-                                dur = max(0.0, et - st)
+                                # pretty_midi直接提供准确的duration字段（秒）
+                                dur = float(n.get('duration', 0.0))
+                                if dur <= 0:
+                                    # 如果duration字段无效，尝试计算
+                                    start_time = float(n.get('start_time', 0.0))
+                                    end_time = float(n.get('end_time', start_time))
+                                    dur = max(0.0, end_time - start_time)
+                                
+                                if dur >= thr:
+                                    filtered.append(n)
+                                else:
+                                    dropped += 1
                             except Exception:
-                                dur = 0.0
-                            if dur + 1e-9 >= thr:
+                                # 异常情况下保留
                                 filtered.append(n)
+                                continue
                         notes = filtered
-                        self._log_message(f"最短音长过滤: 丢弃 {before_cnt - len(notes)} / {before_cnt} (<{min_ms}ms)")
+                        self._log_message(f"最短音长过滤: 丢弃 {dropped} / {before_cnt} (<{min_ms}ms), 剩余 {len(notes)} 个音符")
+                        # 自验证：检查是否仍存在小于阈值的音符
+                        try:
+                            remain_viol = 0
+                            samples = 0
+                            for n in notes:
+                                try:
+                                    # 使用pretty_midi的准确duration字段验证
+                                    dur = float(n.get('duration', 0.0))
+                                    if dur <= 0:
+                                        start_time = float(n.get('start_time', 0.0))
+                                        end_time = float(n.get('end_time', start_time))
+                                        dur = max(0.0, end_time - start_time)
+                                    
+                                    if dur < thr:
+                                        remain_viol += 1
+                                        if samples < 3:
+                                            self._log_message(f"[验证] 仍存在短音符: note={n.get('note')} dur={dur*1000:.1f}ms < {min_ms}ms", "WARNING")
+                                            samples += 1
+                                except Exception:
+                                    pass
+                            
+                            if remain_viol > 0:
+                                self._log_message(f"[验证] 过滤后仍检测到 {remain_viol} 条短音 (<{min_ms}ms)", "WARNING")
+                            else:
+                                self._log_message(f"[验证] 过滤校验通过：未发现 <{min_ms}ms 的音符", "INFO")
+                        except Exception:
+                            pass
             except Exception as exp:
                 self._log_message(f"最短音长过滤失败: {exp}", "WARNING")
 
@@ -1183,11 +1252,16 @@ class MeowFieldAutoPiano:
             # 保存供回放使用的分析结果与对应文件
             self.analysis_notes = notes
             self.analysis_file = midi_path
+            self._log_message(f"[DEBUG] 保存解析结果: analysis_notes={len(self.analysis_notes)}, analysis_file={self.analysis_file}", "DEBUG")
             self._populate_event_table()
             self._log_message(
                 f"MIDI解析完成: {len(notes)} 条音符；分组筛选: {len(selected)} 组；主旋律提取: {'开启' if self.enable_melody_extract_var.get() else '关闭'}")
         except Exception as e:
             self._log_message(f"MIDI解析异常: {e}", "ERROR")
+            # 确保异常时也清空解析结果
+            self.analysis_notes = []
+            self.analysis_file = ""
+            self._log_message(f"[DEBUG] 异常后清空解析结果: analysis_notes={len(self.analysis_notes)}", "DEBUG")
 
     def _populate_event_table(self):
         """根据 self.analysis_notes 填充事件表"""
@@ -1866,7 +1940,6 @@ class MeowFieldAutoPiano:
         try:
             filetypes = [
                 ("支持的文件", ".mid .midi .lrcp .mp3 .wav .flac .m4a .aac .ogg"),
-{{ ... }}
                 ("MIDI", ".mid .midi"),
                 ("谱面 LRCp", ".lrcp"),
                 ("音频", ".mp3 .wav .flac .m4a .aac .ogg"),
@@ -2077,6 +2150,21 @@ class MeowFieldAutoPiano:
                 chord_replace_melody = False
                 multi_key_cluster_mode = 'original'
 
+            # 下发到 AutoPlayer 的选项（包含回放期望的移调开关与半音）
+            # 说明：enable_pretranspose 为 True 时，AutoPlayer 会在事件映射前对 note 应用 pretranspose_semitones 偏移
+            # 若使用“自动选择白键占比”，建议先在解析时运行一次获取最佳半音并写回 pretranspose_semitones_var
+            # 若未解析，半音默认为 0（不移调）
+            try:
+                enable_preproc = bool(getattr(self, 'enable_preproc_var', tk.BooleanVar(value=True)).get())
+            except Exception:
+                enable_preproc = True
+            try:
+                manual_semitones = int(getattr(self, 'pretranspose_semitones_var', tk.IntVar(value=0)).get())
+            except Exception:
+                manual_semitones = 0
+            # 短音过滤已在MIDI解析阶段(_analyze_current_midi)完成，此处不再处理
+            min_note_duration_ms = 0
+
             options = {
                 'enable_key_fallback': enable_key_fallback,
                 'enable_black_transpose': enable_black_transpose,
@@ -2087,6 +2175,10 @@ class MeowFieldAutoPiano:
                 'chord_replace_melody': chord_replace_melody,
                 'multi_key_cluster_mode': multi_key_cluster_mode,
                 'multi_key_cluster_window_ms': multi_key_cluster_window_ms,
+                # 新增：回放阶段的整曲移调（手动/自动结果均通过该半音值体现）
+                'enable_pretranspose': enable_preproc,
+                'pretranspose_semitones': manual_semitones,
+                # 短音过滤已在MIDI解析阶段完成，此处不再传递
             }
 
             # 通过服务层下发，兼容未来替换播放器
@@ -2105,6 +2197,15 @@ class MeowFieldAutoPiano:
     def _start_auto_play(self):
         """开始自动弹琴（仅MIDI模式）"""
         try:
+            # 在开始任何播放前，先应用一次回放相关设置，确保最新参数下发到 AutoPlayer
+            try:
+                if hasattr(self, '_apply_player_options'):
+                    self._apply_player_options()
+            except Exception as exp:
+                try:
+                    self._log_message(f"应用回放设置时出现警告: {exp}", "WARNING")
+                except Exception:
+                    pass
             # 检查是否已经在演奏中
             if hasattr(self, 'auto_player') and self.auto_player and self.auto_player.is_playing:
                 self._log_message("自动演奏已在进行中", "WARNING")
@@ -2267,7 +2368,27 @@ class MeowFieldAutoPiano:
                     except Exception as e:
                         self._log_message(f"获取和弦设置失败: {e}", "ERROR")
                     try:
-                        # 应用黑键移调和和弦伴奏设置
+                        # 从统一解析设置控件获取参数（确保每次播放前下发）
+                        auto_tx = True
+                        manual_k = 0
+                        min_ms = 0
+                        try:
+                            if hasattr(self, 'auto_transpose_enabled_var'):
+                                auto_tx = bool(self.auto_transpose_enabled_var.get())
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self, 'manual_transpose_semi_var'):
+                                manual_k = int(self.manual_transpose_semi_var.get())
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self, 'min_note_duration_ms_var'):
+                                min_ms = int(self.min_note_duration_ms_var.get())
+                        except Exception:
+                            pass
+
+                        # 先更新 AutoPlayer 的通用选项（不再传递旧的整体移调开关，避免冲突）
                         self.playback_service.configure_auto_player(
                             debug=(bool(self.debug_var.get()) if hasattr(self, 'debug_var') else None),
                             options=dict(
@@ -2280,8 +2401,17 @@ class MeowFieldAutoPiano:
                                 chord_replace_melody=chord_replace_melody,
                             ),
                         )
+                        # 再下发解析前置设置（短音过滤 + 自动/手动移调）到服务层
+                        if hasattr(self, 'playback_service') and self.playback_service:
+                            self.playback_service.configure_analysis_settings(
+                                auto_transpose=auto_tx,
+                                manual_semitones=manual_k,
+                                min_note_duration_ms=min_ms,
+                            )
                         if enable_chord_accomp:
                             self._log_message("已向AutoPlayer传递和弦伴奏设置", "INFO")
+                        # 记录本次设置快照
+                        self._log_message(f"[DEBUG] 解析设置: auto_transpose={auto_tx}, manual_k={manual_k}, min_ms={min_ms}", "DEBUG")
                     except Exception:
                         pass
 
@@ -2296,8 +2426,8 @@ class MeowFieldAutoPiano:
                         from meowauto.config.key_mapping_manager import DEFAULT_MAPPING
                         default_key_mapping = DEFAULT_MAPPING
 
-                    # 架子鼓直接播放，其他乐器使用解析设置
-                    if self.current_instrument == 'drums':
+                    # 架子鼓直接播放，其他乐器使用解析设置（兼容中文/英文标识）
+                    if self.current_instrument in ('drums', '架子鼓'):
                         # 架子鼓直接使用 DrumsController
                         try:
                             if not hasattr(self, 'drums_controller') or not self.drums_controller:
@@ -2319,6 +2449,8 @@ class MeowFieldAutoPiano:
                         use_analyzed = False
                         try:
                             # 检查是否有解析结果且文件匹配
+                            self._log_message(f"[DEBUG] 检查解析结果: hasattr(analysis_notes)={hasattr(self, 'analysis_notes')}, analysis_notes={len(getattr(self, 'analysis_notes', []))}, analysis_file={getattr(self, 'analysis_file', 'None')}", "DEBUG")
+                            
                             if (hasattr(self, 'analysis_notes') and self.analysis_notes and 
                                 hasattr(self, 'analysis_file') and self.analysis_file):
                                 if os.path.abspath(self.analysis_file) == os.path.abspath(midi_path):
@@ -2327,7 +2459,8 @@ class MeowFieldAutoPiano:
                                 else:
                                     self._log_message(f"解析文件不匹配: {self.analysis_file} vs {midi_path}", "WARNING")
                             else:
-                                self._log_message("未找到解析结果，使用原始MIDI播放", "WARNING")
+                                # 未加载右侧解析结果：走统一管线的 pretty_midi 解析播放
+                                self._log_message("未加载右侧解析结果，将直接解析当前文件并播放（统一管线）", "INFO")
                         except Exception as e:
                             self._log_message(f"检查解析结果时出错: {e}", "ERROR")
                             use_analyzed = False
@@ -2786,8 +2919,19 @@ class MeowFieldAutoPiano:
             if not os.path.exists(midi_path):
                 messagebox.showerror("错误", "MIDI文件不存在")
                 return
+            # 非“架子鼓”：统一走 AutoPlayer，以确保移调/短音过滤/量化/和弦等设置生效
+            cur_inst = getattr(self, 'current_instrument', '电子琴')
+            if cur_inst != '架子鼓':
+                try:
+                    self._log_message("使用AutoPlayer播放MIDI（非架子鼓）：将应用移调/短音过滤/量化等设置", "INFO")
+                    # 统一从自动弹琴入口进入，内部会先下发最新回放设置
+                    self._start_auto_play()
+                    return
+                except Exception as e:
+                    self._log_message(f"通过AutoPlayer播放失败，尝试回退: {e}", "WARNING")
+            # 架子鼓或回退：保持原有直通播放
             self.ui_manager.set_status("正在播放MIDI...")
-            self._log_message("开始播放MIDI文件")
+            self._log_message("开始播放MIDI文件(直通)")
             tempo = float(self.tempo_var.get()) if hasattr(self, 'tempo_var') else 1.0
             volume = float(self.volume_var.get()) if hasattr(self, 'volume_var') else 0.7
             ok = False

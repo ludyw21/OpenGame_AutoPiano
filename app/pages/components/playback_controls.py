@@ -253,6 +253,244 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     except Exception:
         pass
 
+    # 统一解析设置（自动移调/手动半音/最短音长阈值）—— 强制绑定到 PlaybackService
+    try:
+        parse_settings = ttk.LabelFrame(tab_parse, text="解析设置（统一管线）", padding="10")
+        parse_settings.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(8, 10))
+
+        # 变量定义并挂到 controller（便于外部读取）
+        controller.auto_transpose_enabled_var = tk.BooleanVar(value=True)
+        controller.manual_transpose_semi_var = tk.IntVar(value=0)
+        controller.min_note_duration_ms_var = tk.IntVar(value=25)
+
+        # 自动移调
+        ttk.Checkbutton(parse_settings, text="自动选择白键率最高的整体移调", variable=controller.auto_transpose_enabled_var).grid(row=0, column=0, sticky=tk.W, columnspan=3)
+
+        # 手动移调半音（当自动关闭时才生效）
+        ttk.Label(parse_settings, text="手动移调(半音):").grid(row=1, column=0, sticky=tk.W, pady=(6,0))
+        spin_manual = ttk.Spinbox(parse_settings, from_=-12, to=12, increment=1, textvariable=controller.manual_transpose_semi_var, width=8)
+        spin_manual.grid(row=1, column=1, sticky=tk.W, padx=(6, 16), pady=(6,0))
+        # 最短音长阈值
+        ttk.Label(parse_settings, text="最短音长阈值(ms): 小于该值的音符将被丢弃").grid(row=1, column=2, sticky=tk.W, pady=(6,0))
+        spin_minms = ttk.Spinbox(parse_settings, from_=0, to=2000, increment=10, textvariable=controller.min_note_duration_ms_var, width=8)
+        spin_minms.grid(row=1, column=3, sticky=tk.W, padx=(6, 0), pady=(6,0))
+
+        # 白键率显示与计算
+        controller.transpose_k_var = tk.StringVar(value="k: 0")
+        controller.white_rate_var = tk.StringVar(value="白键率: -")
+        k_label = ttk.Label(parse_settings, textvariable=controller.transpose_k_var)
+        k_label.grid(row=2, column=0, sticky=tk.W, pady=(8,0))
+        rate_label = ttk.Label(parse_settings, textvariable=controller.white_rate_var)
+        rate_label.grid(row=2, column=1, sticky=tk.W, pady=(8,0))
+
+        def _refresh_white_rate_from_service():
+            try:
+                ps = getattr(controller, 'playback_service', None)
+                if not ps or not hasattr(ps, 'get_last_analysis_stats'):
+                    return
+                st = ps.get_last_analysis_stats() or {}
+                k = int(st.get('k') or 0)
+                rate = st.get('white_rate')
+                controller.transpose_k_var.set(f"k: {k:+d}")
+                controller.white_rate_var.set(f"白键率: {rate:.3f}" if isinstance(rate, (int, float)) else "白键率: -")
+            except Exception:
+                pass
+
+        # 计算作业ID用于防抖
+        controller._calc_white_rate_job = None
+
+        def _compute_white_rate_now():
+            """立即基于当前文件与设置计算白键率（不启动播放）。"""
+            try:
+                from meowauto.midi import analyzer as _an
+                ps = getattr(controller, 'playback_service', None)
+                if not ps:
+                    return
+                # 读取当前文件
+                midi_path = getattr(controller, 'midi_path_var', None).get() if hasattr(controller, 'midi_path_var') else ''
+                if not midi_path:
+                    return
+                res = _an.parse_midi(midi_path)
+                if not isinstance(res, dict) or not res.get('ok'):
+                    return
+                notes = res.get('notes') or []
+                # 应用当前设置（调用服务内部预处理计算统计）
+                if hasattr(ps, '_apply_pre_filters_and_transpose'):
+                    processed = ps._apply_pre_filters_and_transpose(notes)  # 计算并更新 last_analysis_stats
+                    # 将预处理后的事件缓存到控制器，供“使用已解析结果播放”直接命中
+                    try:
+                        controller.analysis_notes = list(processed)
+                        controller.analysis_file = midi_path
+                        controller._log_message(f"[DEBUG] 已缓存解析事件: {len(controller.analysis_notes)} 条", "DEBUG")
+                    except Exception:
+                        pass
+                _refresh_white_rate_from_service()
+            except Exception:
+                pass
+
+        def _schedule_compute_white_rate(delay_ms: int = 300):
+            try:
+                # 构建一次防抖调度
+                if hasattr(controller, 'root') and getattr(controller, 'root', None):
+                    if getattr(controller, '_calc_white_rate_job', None):
+                        try:
+                            controller.root.after_cancel(controller._calc_white_rate_job)
+                        except Exception:
+                            pass
+                    controller._calc_white_rate_job = controller.root.after(delay_ms, _compute_white_rate_now)
+                else:
+                    # 无 root 时直接执行
+                    _compute_white_rate_now()
+            except Exception:
+                pass
+
+        ttk.Button(parse_settings, text="计算白键率", command=_compute_white_rate_now).grid(row=2, column=2, sticky=tk.W, pady=(8,0))
+
+        for c in range(4):
+            try:
+                parse_settings.grid_columnconfigure(c, weight=1)
+            except Exception:
+                pass
+
+        # 解析引擎选择（自动/pretty_midi/miditoolkit）
+        try:
+            ttk.Label(parse_settings, text="解析引擎:").grid(row=3, column=0, sticky=tk.W, pady=(8,0))
+            controller._engine_label_to_value = {'自动': 'auto', 'pretty_midi': 'pretty_midi', 'miditoolkit': 'miditoolkit'}
+            controller._engine_value_to_label = {v: k for k, v in controller._engine_label_to_value.items()}
+            controller.parser_engine_var = tk.StringVar(value='miditoolkit')
+            engine_combo = ttk.Combobox(parse_settings, textvariable=controller.parser_engine_var, state='readonly', width=14,
+                                        values=list(controller._engine_label_to_value.keys()))
+            engine_combo.grid(row=3, column=1, sticky=tk.W)
+
+            def _on_engine_changed(*args):
+                try:
+                    from meowauto.midi import analyzer as _an
+                    label = controller.parser_engine_var.get()
+                    value = controller._engine_label_to_value.get(label, 'miditoolkit')
+                    if hasattr(_an, 'set_default_engine'):
+                        _an.set_default_engine(value)
+                    # 记录日志
+                    try:
+                        controller._log_message(f"解析引擎已切换为: {label} ({value})", "INFO")
+                    except Exception:
+                        pass
+                    # 引擎改变后，重新计算白键率
+                    _schedule_compute_white_rate(100)
+                except Exception:
+                    pass
+
+            controller.parser_engine_var.trace_add('write', _on_engine_changed)
+            # 初始化执行一次，确保默认引擎生效
+            _on_engine_changed()
+        except Exception:
+            pass
+
+        def _sync_analysis_settings(*args, **kwargs):
+            try:
+                ps = getattr(controller, 'playback_service', None)
+                if ps and hasattr(ps, 'configure_analysis_settings'):
+                    ps.configure_analysis_settings(
+                        auto_transpose=bool(controller.auto_transpose_enabled_var.get()),
+                        manual_semitones=int(controller.manual_transpose_semi_var.get()),
+                        min_note_duration_ms=int(controller.min_note_duration_ms_var.get()),
+                    )
+                # 自动模式下禁用手动输入
+                try:
+                    if bool(controller.auto_transpose_enabled_var.get()):
+                        spin_manual.configure(state='disabled')
+                    else:
+                        spin_manual.configure(state='normal')
+                except Exception:
+                    pass
+                # 自动触发一次“白键率计算”（防抖），做到每次设置变更即计算并刷新显示
+                _schedule_compute_white_rate(300)
+            except Exception:
+                pass
+
+        # 绑定变化事件（即改即生效）
+        try:
+            controller.auto_transpose_enabled_var.trace_add('write', lambda *a, **k: _sync_analysis_settings())
+            controller.manual_transpose_semi_var.trace_add('write', lambda *a, **k: _sync_analysis_settings())
+            controller.min_note_duration_ms_var.trace_add('write', lambda *a, **k: _sync_analysis_settings())
+        except Exception:
+            pass
+
+        # 初始化一次
+        _sync_analysis_settings()
+
+        # 若有当前文件路径变量，变化时也自动重新计算白键率
+        try:
+            # 定义控制器级别的钩子，供 file_select 等组件复用
+            def _on_midi_path_changed(*a, **k):
+                try:
+                    path = controller.midi_path_var.get() if hasattr(controller, 'midi_path_var') else ''
+                except Exception:
+                    path = ''
+                try:
+                    controller._log_message(f"[DEBUG] 文件路径变更: {path}", "DEBUG")
+                except Exception:
+                    pass
+                # 立即计算一次，确保UI即时显示白键率/k
+                _compute_white_rate_now()
+                # 再调度一次，兜底刷新
+                _schedule_compute_white_rate(200)
+
+            # 绑定到 controller，便于其他文件调用
+            controller._on_midi_path_changed = _on_midi_path_changed
+
+            # 若变量已存在，直接注册 trace；如果稍后创建，file_select 中会调用该钩子
+            if hasattr(controller, 'midi_path_var') and controller.midi_path_var:
+                controller.midi_path_var.trace_add('write', _on_midi_path_changed)
+        except Exception:
+            pass
+
+        # —— 扫弦/聚合设置 ——
+        try:
+            strum_frame = ttk.LabelFrame(tab_parse, text="扫弦/聚合设置", padding="10")
+            strum_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
+            ttk.Label(strum_frame, text="扫弦模式:").grid(row=0, column=0, sticky=tk.W)
+            # 中文标签与内部值映射
+            controller._strum_label_to_value = {'合并': 'merge', '扫弦': 'arpeggio', '原始': 'original'}
+            controller._strum_value_to_label = {v: k for k, v in controller._strum_label_to_value.items()}
+            controller.multi_key_cluster_mode_var = tk.StringVar(value='合并')
+            mode_combo = ttk.Combobox(strum_frame, textvariable=controller.multi_key_cluster_mode_var, state='readonly', width=10,
+                                      values=list(controller._strum_label_to_value.keys()))
+            mode_combo.grid(row=0, column=1, sticky=tk.W, padx=(6, 16))
+            ttk.Label(strum_frame, text="聚合窗口(ms):").grid(row=0, column=2, sticky=tk.W)
+            controller.multi_key_cluster_window_ms_var = tk.IntVar(value=240)
+            ttk.Spinbox(strum_frame, from_=0, to=500, increment=1, textvariable=controller.multi_key_cluster_window_ms_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=(6,0))
+
+            def _sync_strum_settings(*args, **kwargs):
+                try:
+                    ps = getattr(controller, 'playback_service', None)
+                    if ps and hasattr(ps, 'configure_auto_player'):
+                        label = controller.multi_key_cluster_mode_var.get()
+                        mode_val = controller._strum_label_to_value.get(label, 'merge')
+                        ps.configure_auto_player(options=dict(
+                            multi_key_cluster_mode=mode_val,
+                            multi_key_cluster_window_ms=int(controller.multi_key_cluster_window_ms_var.get()),
+                        ))
+                except Exception:
+                    pass
+            controller.multi_key_cluster_mode_var.trace_add('write', lambda *a, **k: _sync_strum_settings())
+            controller.multi_key_cluster_window_ms_var.trace_add('write', lambda *a, **k: _sync_strum_settings())
+            _sync_strum_settings()
+        except Exception:
+            pass
+
+        # 架子鼓禁用解析设置（直通）
+        try:
+            if (instrument or '').strip() == '架子鼓':
+                for w in parse_settings.winfo_children():
+                    try:
+                        w.configure(state='disabled')
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     # 默认显示“控制”页（再次调用确保初始渲染）
     switch_tab('controls')
     try:
@@ -262,14 +500,32 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     except Exception:
         pass
 
+    # —— 全局热键：仅保留 Ctrl+Shift+C 停止所有播放 ——
+    try:
+        if hasattr(controller, 'root') and controller.root:
+            # 解绑可能存在的旧热键（容错处理，不抛错）
+            for seq in ('<space>', '<Space>', '<Escape>', '<ESC>', '<Control-s>', '<Control-S>'):
+                try:
+                    controller.root.unbind_all(seq)
+                except Exception:
+                    pass
+            # 绑定 Ctrl+Shift+C 停止
+            def _stop_all_hotkey(event=None):
+                try:
+                    if hasattr(controller, '_stop_playback'):
+                        controller._stop_playback()
+                except Exception:
+                    pass
+            controller.root.bind_all('<Control-Shift-C>', _stop_all_hotkey)
+            controller._log_message('已注册热键 Ctrl+Shift+C 用于停止所有播放（已移除其他热键）', 'INFO')
+    except Exception:
+        pass
+
     # 帮助页签内容
     help_inner = ttk.Frame(tab_help)
     help_inner.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
     help_text = (
         "热键说明:\n"
-        "• 空格: 开始/暂停/恢复\n"
-        "• ESC: 停止\n"
-        "• Ctrl+S: 停止自动演奏\n"
         "• Ctrl+Shift+C: 停止所有播放\n"
         "\n使用说明:\n"
         "1. 选择音频文件 → 音频转MIDI\n"
@@ -341,7 +597,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         ttk.Button(btn_row, text="播放MIDI", style=styles['success'], command=controller._play_midi).pack(side=tk.LEFT)
         ttk.Button(btn_row, text="停止", style=styles['danger'], command=controller._stop_playback).pack(side=tk.LEFT, padx=(12,0))
         # 快捷键提示
-        hint = ttk.Label(button_frame, text="快捷键: 空格=暂停/恢复, ESC=停止, Ctrl+S=停止自动演奏", foreground="#666")
+        hint = ttk.Label(button_frame, text="快捷键: Ctrl+Shift+C=停止所有播放", foreground="#666")
         hint.pack(side=tk.TOP, anchor=tk.W, pady=(10,0))
     except Exception as e:
         # 加载失败兜底
@@ -491,4 +747,5 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         for i in range(4):
             start_frame.columnconfigure(i, weight=1)
 
-    return notebook
+    # 不返回未定义的 notebook，避免 NameError
+    return None

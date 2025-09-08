@@ -1,64 +1,66 @@
 """
-MIDI analyzer: parse notes, filter by pitch groups, simple melody extraction.
+MIDI analyzer: parse notes using pretty_midi library for accurate timing.
 """
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 try:
-    import mido
+    import pretty_midi
 except Exception:
-    mido = None  # Analyzer will report error if unavailable
+    pretty_midi = None
+try:
+    import miditoolkit
+except Exception:
+    miditoolkit = None
 
 from .groups import filter_notes_by_groups, group_for_note
 
+# ===== 解析引擎选择（默认：miditoolkit，更稳健处理不规范MIDI） =====
+DEFAULT_ENGINE = 'miditoolkit'  # 'auto' | 'pretty_midi' | 'miditoolkit'
 
-def _gather_notes(mid) -> List[Dict[str, Any]]:
-    """使用mido原生时间转换收集音符事件"""
+def set_default_engine(engine: str) -> None:
+    global DEFAULT_ENGINE
+    e = (engine or '').strip().lower()
+    if e in ('auto', 'pretty_midi', 'miditoolkit'):
+        DEFAULT_ENGINE = e
+    else:
+        DEFAULT_ENGINE = 'miditoolkit'
+
+
+def _gather_notes(pm_data) -> List[Dict[str, Any]]:
+    """使用pretty_midi收集音符事件，直接获得准确的秒级时间"""
     events: List[Dict[str, Any]] = []
-    note_states = {}  # 跟踪note_on状态
     
-    # 遍历所有轨道，使用mido的自动时间转换
-    for track_idx, track in enumerate(mid.tracks):
-        absolute_time = 0
-        for msg in track:
-            absolute_time += msg.time  # mido自动处理tick到秒的转换
-            
-            if msg.type == 'note_on' and msg.velocity > 0:
-                # 记录note_on
-                note_key = (msg.channel, msg.note)
-                note_states[note_key] = {
-                    'start_time': absolute_time,
-                    'velocity': msg.velocity,
-                    'track': track_idx
-                }
-            
-            elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                # 处理note_off，创建完整的音符事件
-                note_key = (msg.channel, msg.note)
-                if note_key in note_states:
-                    note_info = note_states.pop(note_key)
-                    
-                    events.append({
-                        'start_time': note_info['start_time'],
-                        'end_time': absolute_time,
-                        'duration': absolute_time - note_info['start_time'],
-                        'note': msg.note,
-                        'velocity': note_info['velocity'],
-                        'channel': msg.channel,
-                        'track': note_info['track']
-                    })
+    # 调试信息
+    print(f"[DEBUG] 解析到 {len(pm_data.instruments)} 个乐器")
     
-    # 处理未结束的note_on（文件结尾）
-    for note_key, note_info in note_states.items():
-        end_time = mid.length  # 使用文件总长度
-        events.append({
-            'start_time': note_info['start_time'],
-            'end_time': end_time,
-            'duration': end_time - note_info['start_time'],
-            'note': note_key[1],
-            'velocity': note_info['velocity'],
-            'channel': note_key[0],
-            'track': note_info['track']
-        })
+    # 遍历所有乐器
+    for instrument_idx, instrument in enumerate(pm_data.instruments):
+        print(f"[DEBUG] 乐器 {instrument_idx}: {len(instrument.notes)} 个音符, is_drum={instrument.is_drum}, program={instrument.program}")
+        
+        # 遍历乐器中的所有音符
+        for note_idx, note in enumerate(instrument.notes):
+            # 保持原始通道信息，不强制修改
+            channel = 9 if instrument.is_drum else instrument_idx
+            duration = note.end - note.start
+            
+            # 调试前几个音符的时长
+            if note_idx < 3:
+                print(f"[DEBUG] 音符 {note_idx}: start={note.start:.4f}s, end={note.end:.4f}s, duration={duration:.4f}s, pitch={note.pitch}")
+            
+            events.append({
+                'start_time': note.start,  # 直接以秒为单位
+                'end_time': note.end,      # 直接以秒为单位
+                'duration': duration,      # 准确的时长（秒）
+                'note': note.pitch,        # MIDI音符号
+                'velocity': note.velocity, # 力度
+                'channel': channel,        # 使用乐器索引作为通道
+                'track': instrument_idx,   # 轨道索引
+                'program': instrument.program,  # 乐器程序号
+                'instrument_name': instrument.name or f"Instrument_{instrument_idx}",
+                'is_drum': instrument.is_drum  # 添加鼓标识
+            })
+    
+    print(f"[DEBUG] 总共收集到 {len(events)} 个音符事件")
     
     # 添加音符分组信息
     for e in events:
@@ -71,15 +73,221 @@ def _gather_notes(mid) -> List[Dict[str, Any]]:
 
 
 def parse_midi(file_path: str) -> Dict[str, Any]:
-    if mido is None:
-        return {'ok': False, 'error': 'mido 不可用'}
+    """解析MIDI文件，优先使用 pretty_midi；失败或结果异常时回退 miditoolkit。
+    返回统一结构：{'ok': bool, 'notes': list, 'channels': list, 'resolution': int|None, 'initial_tempo': float, 'end_time': float, 'total_notes': int, 'source': 'pretty_midi'|'miditoolkit'}
+    """
+    # 根据 DEFAULT_ENGINE 决定优先顺序
+    engine = DEFAULT_ENGINE
     try:
-        mid = mido.MidiFile(file_path)
-        notes = _gather_notes(mid)
-        channels = sorted({n['channel'] for n in notes}) if notes else []
-        return {'ok': True, 'notes': notes, 'channels': channels, 'ticks_per_beat': getattr(mid, 'ticks_per_beat', 480)}
+        print(f"[DEBUG] 解析引擎请求: engine={engine}, file={file_path}")
+    except Exception:
+        pass
+    if engine == 'miditoolkit':
+        # 先走 miditoolkit
+        try:
+            if miditoolkit is None:
+                # 无 miditoolkit 则退回 auto（后续尝试 pretty_midi）
+                pass
+            else:
+                midi_obj = miditoolkit.midi.parser.MidiFile(file_path)
+                notes: List[Dict[str, Any]] = []
+                try:
+                    if midi_obj.tempo_changes:
+                        initial_tempo = float(midi_obj.tempo_changes[0].tempo)
+                    else:
+                        initial_tempo = 120.0
+                except Exception:
+                    initial_tempo = 120.0
+                try:
+                    end_time = float(midi_obj.max_tick) * (60.0 / (initial_tempo * float(midi_obj.ticks_per_beat))) if midi_obj.ticks_per_beat else 0.0
+                except Exception:
+                    end_time = 0.0
+                for ti, inst in enumerate(midi_obj.instruments):
+                    is_drum = bool(getattr(inst, 'is_drum', False))
+                    program = int(getattr(inst, 'program', 0) or 0)
+                    name = str(getattr(inst, 'name', '') or f"Instrument_{ti}")
+                    for note in inst.notes:
+                        rec = {
+                            'start_time': float(note.start),
+                            'end_time': float(note.end),
+                            'duration': max(0.0, float(note.end) - float(note.start)),
+                            'note': int(note.pitch),
+                            'velocity': int(note.velocity),
+                            'channel': 9 if is_drum else ti,
+                            'track': ti,
+                            'program': program,
+                            'instrument_name': name,
+                            'is_drum': is_drum,
+                        }
+                        rec['group'] = group_for_note(rec['note'])
+                        notes.append(rec)
+                notes.sort(key=lambda x: x['start_time'])
+                channels = sorted({n['channel'] for n in notes}) if notes else []
+                out = {
+                    'ok': True,
+                    'notes': notes,
+                    'channels': channels,
+                    'resolution': int(getattr(midi_obj, 'ticks_per_beat', 480) or 480),
+                    'initial_tempo': initial_tempo,
+                    'end_time': end_time if end_time > 0 else (notes[-1]['end_time'] if notes else 0.0),
+                    'total_notes': len(notes),
+                    'source': 'miditoolkit',
+                }
+                try:
+                    print(f"[DEBUG] 解析完成: source=miditoolkit, total_notes={out['total_notes']}, end_time={out['end_time']:.3f}s")
+                except Exception:
+                    pass
+                return out
+        except Exception:
+            # 失败则继续走 auto 路径
+            pass
+
+    # 其余情况统一走 auto（pretty_midi 优先，失败/异常回退 miditoolkit，并内置一致性校验）
+    pm_ok = False
+    try:
+        if pretty_midi is not None:
+            pm_data = pretty_midi.PrettyMIDI(file_path)
+            notes = _gather_notes(pm_data)
+            channels = sorted({n['channel'] for n in notes}) if notes else []
+            tempo_changes = pm_data.get_tempo_changes()
+            initial_tempo = tempo_changes[1][0] if len(tempo_changes[1]) > 0 else 120.0
+            end_time = pm_data.get_end_time()
+            if notes and end_time > 0:
+                # 可选一致性校验：与 miditoolkit 对比若差异过大则回退
+                try:
+                    if miditoolkit is not None:
+                        midi_obj = miditoolkit.midi.parser.MidiFile(file_path)
+                        mk_notes: List[Dict[str, Any]] = []
+                        for ti, inst in enumerate(midi_obj.instruments):
+                            is_drum = bool(getattr(inst, 'is_drum', False))
+                            program = int(getattr(inst, 'program', 0) or 0)
+                            name = str(getattr(inst, 'name', '') or f"Instrument_{ti}")
+                            for note in inst.notes:
+                                mk_notes.append({
+                                    'start_time': float(note.start),
+                                    'end_time': float(note.end),
+                                    'duration': max(0.0, float(note.end) - float(note.start)),
+                                    'note': int(note.pitch),
+                                    'velocity': int(note.velocity),
+                                    'channel': 9 if is_drum else ti,
+                                    'track': ti,
+                                    'program': program,
+                                    'instrument_name': name,
+                                    'is_drum': is_drum,
+                                    'group': group_for_note(int(note.pitch)),
+                                })
+                        mk_notes.sort(key=lambda x: x['start_time'])
+                        # 取前N条比对时间差
+                        N = min(200, len(notes), len(mk_notes))
+                        max_ds = 0.0
+                        max_de = 0.0
+                        for i in range(N):
+                            ds = abs(float(notes[i]['start_time']) - float(mk_notes[i]['start_time']))
+                            de = abs(float(notes[i]['end_time']) - float(mk_notes[i]['end_time']))
+                            if ds > max_ds:
+                                max_ds = ds
+                            if de > max_de:
+                                max_de = de
+                        # 阈值：>50ms 认为不一致，优先采用 miditoolkit
+                        if max_ds > 0.05 or max_de > 0.05:
+                            print(f"[DEBUG] pretty_midi 时序与 miditoolkit 差异过大(max_ds={max_ds:.3f}, max_de={max_de:.3f})，回退到 miditoolkit 结果")
+                            channels_mk = sorted({n['channel'] for n in mk_notes}) if mk_notes else []
+                            return {
+                                'ok': True,
+                                'notes': mk_notes,
+                                'channels': channels_mk,
+                                'resolution': int(getattr(midi_obj, 'ticks_per_beat', 480) or 480),
+                                'initial_tempo': float(midi_obj.tempo_changes[0].tempo) if getattr(midi_obj, 'tempo_changes', None) else 120.0,
+                                'end_time': mk_notes[-1]['end_time'] if mk_notes else 0.0,
+                                'total_notes': len(mk_notes),
+                                'source': 'miditoolkit',
+                            }
+                except Exception:
+                    # 校验失败不影响正常返回
+                    pass
+                pm_ok = True
+                out = {
+                    'ok': True,
+                    'notes': notes,
+                    'channels': channels,
+                    'resolution': pm_data.resolution,
+                    'initial_tempo': initial_tempo,
+                    'end_time': end_time,
+                    'total_notes': len(notes),
+                    'source': 'pretty_midi',
+                }
+                try:
+                    print(f"[DEBUG] 解析完成: source=pretty_midi, total_notes={out['total_notes']}, end_time={out['end_time']:.3f}s")
+                except Exception:
+                    pass
+                return out
     except Exception as e:
-        return {'ok': False, 'error': str(e)}
+        # 打印调试信息但继续尝试回退
+        print(f"[DEBUG] pretty_midi解析失败，尝试回退: {e}")
+
+    # 回退到 miditoolkit
+    try:
+        if miditoolkit is None:
+            return {'ok': False, 'error': '解析失败：pretty_midi异常且未安装miditoolkit（pip install miditoolkit）'}
+        midi_obj = miditoolkit.midi.parser.MidiFile(file_path)
+        notes: List[Dict[str, Any]] = []
+        # 采集 tempo（BPM）与 end_time
+        try:
+            if midi_obj.tempo_changes:
+                initial_tempo = float(midi_obj.tempo_changes[0].tempo)
+            else:
+                initial_tempo = 120.0
+        except Exception:
+            initial_tempo = 120.0
+        try:
+            end_time = float(midi_obj.max_tick) * (60.0 / (initial_tempo * float(midi_obj.ticks_per_beat))) if midi_obj.ticks_per_beat else 0.0
+        except Exception:
+            end_time = 0.0
+
+        # 遍历乐器/轨道
+        for ti, inst in enumerate(midi_obj.instruments):
+            is_drum = bool(getattr(inst, 'is_drum', False))
+            program = int(getattr(inst, 'program', 0) or 0)
+            name = str(getattr(inst, 'name', '') or f"Instrument_{ti}")
+            for note in inst.notes:
+                try:
+                    # miditoolkit 的时间是 tick 基于 tempo_map 归一到秒，可直接用 start/end（秒）
+                    st = float(note.start)
+                    et = float(note.end)
+                    dur = max(0.0, et - st)
+                    pitch = int(note.pitch)
+                    velocity = int(note.velocity)
+                    channel = 9 if is_drum else ti
+                    rec = {
+                        'start_time': st,
+                        'end_time': et,
+                        'duration': dur,
+                        'note': pitch,
+                        'velocity': velocity,
+                        'channel': channel,
+                        'track': ti,
+                        'program': program,
+                        'instrument_name': name,
+                        'is_drum': is_drum,
+                    }
+                    rec['group'] = group_for_note(rec['note'])
+                    notes.append(rec)
+                except Exception:
+                    continue
+        notes.sort(key=lambda x: x['start_time'])
+        channels = sorted({n['channel'] for n in notes}) if notes else []
+        return {
+            'ok': True,
+            'notes': notes,
+            'channels': channels,
+            'resolution': int(getattr(midi_obj, 'ticks_per_beat', 480) or 480),
+            'initial_tempo': initial_tempo,
+            'end_time': end_time if end_time > 0 else (notes[-1]['end_time'] if notes else 0.0),
+            'total_notes': len(notes),
+            'source': 'miditoolkit',
+        }
+    except Exception as e:
+        return {'ok': False, 'error': f'解析MIDI失败（回退miditoolkit也失败）: {str(e)}'}
 
 
 def filter_by_groups(notes: List[Dict[str, Any]], selected_groups: List[str]) -> List[Dict[str, Any]]:

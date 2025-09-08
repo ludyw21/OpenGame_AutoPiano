@@ -5,6 +5,8 @@ PlaybackService: 播放相关服务（占位）
 - 当前提供最小接口占位，不在应用中直接调用
 """
 from typing import Any, Callable, Optional, List, Dict
+from meowauto.midi import analyzer
+from meowauto.core import Logger
 try:
     from meowauto.net.clock import ClockProvider, LocalClock, NetworkClockProvider
 except Exception:
@@ -14,7 +16,8 @@ except Exception:
 
 class PlaybackService:
     def __init__(self, logger: Optional[Any] = None, clock_provider: Optional[Any] = None):
-        self.logger = logger
+        # 确保有可用的 logger
+        self.logger = logger or Logger()
         self.midi_player = None
         self.auto_player = None
         # 默认使用本地时钟（若可用）
@@ -22,14 +25,21 @@ class PlaybackService:
             self.clock_provider = clock_provider or (LocalClock() if LocalClock else None)
         except Exception:
             self.clock_provider = clock_provider or None
+        # 解析/播放前置设置（可由页面UI注入）
+        self.analysis_settings: Dict[str, Any] = {
+            'auto_transpose': True,        # 自动选择白键率最高的整体移调（默认开启）
+            'manual_semitones': 0,         # 当 auto_transpose=False 时使用
+            'min_note_duration_ms': 25,    # 短音阈值（仅对非鼓），默认25ms
+        }
+        # 最近一次分析统计（供UI展示）
+        self.last_analysis_stats: Dict[str, Any] = {'k': 0, 'white_rate': None}
 
     def init_players(self) -> None:
         """延迟初始化播放器（占位）。"""
         try:
             if self.midi_player is None:
                 from meowauto.playback import MidiPlayer
-                from meowauto.core import Logger
-                self.midi_player = MidiPlayer(self.logger or Logger())
+                self.midi_player = MidiPlayer(self.logger)
         except Exception:
             pass
         try:
@@ -38,8 +48,7 @@ class PlaybackService:
                     from meowauto.playback import AutoPlayer  # 常规导入路径
                 except Exception:
                     from meowauto.playback.auto_player import AutoPlayer  # 回退导入
-                from meowauto.core import Logger
-                self.auto_player = AutoPlayer(self.logger or Logger())
+                self.auto_player = AutoPlayer(self.logger)
                 # 初始化后尝试下发时钟
                 try:
                     if self.clock_provider and hasattr(self.auto_player, 'set_clock_provider'):
@@ -49,6 +58,147 @@ class PlaybackService:
         except Exception:
             pass
 
+    # ===== 解析设置注入 =====
+    def configure_analysis_settings(self, *, auto_transpose: Optional[bool] = None,
+                                    manual_semitones: Optional[int] = None,
+                                    min_note_duration_ms: Optional[int] = None) -> None:
+        try:
+            if auto_transpose is not None:
+                self.analysis_settings['auto_transpose'] = bool(auto_transpose)
+            if manual_semitones is not None:
+                try:
+                    self.analysis_settings['manual_semitones'] = int(manual_semitones)
+                except Exception:
+                    pass
+            if min_note_duration_ms is not None:
+                try:
+                    self.analysis_settings['min_note_duration_ms'] = max(0, int(min_note_duration_ms))
+                except Exception:
+                    pass
+            if self.logger:
+                self.logger.log(f"[DEBUG] 更新解析设置: {self.analysis_settings}", "DEBUG")
+        except Exception:
+            pass
+
+    # 内部：应用短音过滤与整体移调（白键率最高）。对鼓轨/通道跳过。
+    def _apply_pre_filters_and_transpose(self, notes: List[Dict]) -> List[Dict]:
+        if not notes:
+            return []
+        try:
+            min_ms = int(self.analysis_settings.get('min_note_duration_ms', 25) or 25)
+        except Exception:
+            min_ms = 25
+        thr = max(0, min_ms) / 1000.0
+
+        # 过滤（仅非鼓）
+        out: List[Dict] = []
+        dropped = 0
+        for n in notes:
+            try:
+                is_drum = bool(n.get('is_drum')) or (int(n.get('channel', 0)) == 9)
+            except Exception:
+                is_drum = False
+            dur = float(n.get('duration', 0.0))
+            if dur <= 0:
+                st = float(n.get('start_time', 0.0)); et = float(n.get('end_time', st))
+                dur = max(0.0, et - st)
+            if not is_drum and thr > 0 and dur < thr:
+                dropped += 1
+                continue
+            out.append(dict(n))
+        if self.logger and min_ms > 0:
+            self.logger.log(f"[DEBUG] 短音过滤: 丢弃 {dropped} / {len(notes)} (<{min_ms}ms)", "DEBUG")
+
+        # 自动移调（白键率最高），仅对非鼓的 note 生效
+        auto_tx = bool(self.analysis_settings.get('auto_transpose', True))
+        try:
+            manual_k = int(self.analysis_settings.get('manual_semitones', 0) or 0)
+        except Exception:
+            manual_k = 0
+
+        def is_white(p: int) -> bool:
+            return (p % 12) in (0, 2, 4, 5, 7, 9, 11)
+
+        # 统计函数（按事件计数；duration 权重留作后续可选）
+        def white_rate_for_k(k: int) -> float:
+            cnt = 0
+            tot = 0
+            for n in out:
+                try:
+                    is_drum = bool(n.get('is_drum')) or (int(n.get('channel', 0)) == 9)
+                except Exception:
+                    is_drum = False
+                if is_drum:
+                    continue
+                try:
+                    p0 = int(n.get('note', 0))
+                except Exception:
+                    continue
+                p = p0 + int(k)
+                # 超出音域的不纳入分母
+                if p < 0 or p > 127:
+                    continue
+                tot += 1
+                if is_white(p):
+                    cnt += 1
+            if tot == 0:
+                return 0.0
+            return cnt / float(max(1, tot))
+
+        k_chosen = 0
+        if auto_tx:
+            candidates = list(range(-12, 13))
+            scores = []
+            for k in candidates:
+                rate = white_rate_for_k(k)
+                scores.append((k, rate))
+            # 日志：输出前5名候选
+            try:
+                top5 = sorted(scores, key=lambda x: x[1], reverse=True)[:5]
+                if self.logger:
+                    self.logger.log("[DEBUG] 白键率候选TOP5: " + ", ".join([f"k={k:+d}:{r:.3f}" for k, r in top5]), "DEBUG")
+            except Exception:
+                pass
+            # 选择：白键率最高，若并列取 |k| 最小
+            if scores:
+                best_rate = max(r for _, r in scores)
+                tied = [k for k, r in scores if r == best_rate]
+                k_chosen = sorted(tied, key=lambda x: (abs(x), x))[0]
+        else:
+            k_chosen = max(-12, min(12, manual_k))
+
+        # 应用移调
+        if k_chosen != 0:
+            for n in out:
+                try:
+                    is_drum = bool(n.get('is_drum')) or (int(n.get('channel', 0)) == 9)
+                except Exception:
+                    is_drum = False
+                if is_drum:
+                    continue
+                try:
+                    p0 = int(n.get('note', 0))
+                    n['note_orig'] = p0
+                    p1 = p0 + int(k_chosen)
+                    n['note'] = max(0, min(127, p1))
+                except Exception:
+                    pass
+        # 统计白键率（用于UI展示）
+        try:
+            rate_chosen = white_rate_for_k(k_chosen)
+        except Exception:
+            rate_chosen = None
+        self.last_analysis_stats = {'k': k_chosen, 'white_rate': rate_chosen}
+        if self.logger and (auto_tx or k_chosen != 0):
+            if rate_chosen is not None:
+                self.logger.log(f"[DEBUG] 整体移调: k={k_chosen}，白键率={rate_chosen:.3f}，白键率自动={auto_tx}", "DEBUG")
+            else:
+                self.logger.log(f"[DEBUG] 整体移调: k={k_chosen}，白键率自动={auto_tx}", "DEBUG")
+        return out
+
+    def get_last_analysis_stats(self) -> Dict[str, Any]:
+        return dict(self.last_analysis_stats)
+
     # ===== 时钟注入 =====
     def set_clock_provider(self, provider: Any) -> None:
         """设置/替换 ClockProvider，并尝试下发给 AutoPlayer（若支持）。"""
@@ -56,6 +206,29 @@ class PlaybackService:
         try:
             if self.auto_player and hasattr(self.auto_player, 'set_clock_provider'):
                 self.auto_player.set_clock_provider(provider)
+        except Exception:
+            pass
+
+    # ===== 下发 AutoPlayer 选项（供 app.py 调用） =====
+    def configure_auto_player(self, *, debug: Optional[bool] = None, options: Optional[Dict[str, Any]] = None) -> None:
+        """配置 AutoPlayer 的调试开关与各类可选参数（和弦/黑键移调/回退等）。"""
+        try:
+            self.init_players()
+            ap = self.auto_player
+            if not ap:
+                return
+            if debug is not None and hasattr(ap, 'set_debug'):
+                try:
+                    ap.set_debug(bool(debug))
+                except Exception:
+                    pass
+            if isinstance(options, dict) and hasattr(ap, 'set_options'):
+                try:
+                    ap.set_options(**options)
+                except Exception:
+                    pass
+            if self.logger:
+                self.logger.log("[DEBUG] AutoPlayer 配置已更新", "DEBUG")
         except Exception:
             pass
 
@@ -332,17 +505,79 @@ class PlaybackService:
         
         # 添加调试日志
         if self.logger:
-            self.logger.log(f"PlaybackService启动播放: tempo={tempo}, use_analyzed={use_analyzed}", "DEBUG")
+            try:
+                self.logger.log(
+                    f"PlaybackService启动播放: tempo={tempo}, use_analyzed={use_analyzed}, analysis_settings={self.analysis_settings}",
+                    "DEBUG"
+                )
+            except Exception:
+                self.logger.log(f"PlaybackService启动播放: tempo={tempo}, use_analyzed={use_analyzed}", "DEBUG")
         
         try:
+            # 统一管线：优先使用传入的已解析事件，否则自行解析（pretty_midi）
             if use_analyzed and analyzed_notes is not None and hasattr(ap, 'start_auto_play_midi_events'):
+                # 即便传入已解析事件，也必须走统一的“过滤+自动移调”前置处理
+                notes_in = list(analyzed_notes or [])
+                notes2 = self._apply_pre_filters_and_transpose(notes_in)
                 if self.logger:
-                    self.logger.log(f"使用已解析事件播放，事件数: {len(analyzed_notes) if analyzed_notes else 0}", "DEBUG")
-                return bool(ap.start_auto_play_midi_events(analyzed_notes, tempo=tempo, key_mapping=key_mapping, strategy_name=strategy_name))
-            if hasattr(ap, 'start_auto_play_midi'):
+                    stats = self.get_last_analysis_stats()
+                    self.logger.log(
+                        f"使用已解析事件播放，原事件数: {len(notes_in)}, 过滤/移调后: {len(notes2)}, k={stats.get('k')}, white_rate={stats.get('white_rate')}",
+                        "DEBUG"
+                    )
+                if not notes2:
+                    return False
+                ok = bool(ap.start_auto_play_midi_events(notes2, tempo=tempo, key_mapping=key_mapping, strategy_name=strategy_name))
+                try:
+                    ok = ok and bool(getattr(ap, 'is_playing', False))
+                except Exception:
+                    pass
+                if self.logger and not ok:
+                    self.logger.log("[DEBUG] AutoPlayer 启动失败（已解析事件路径）", "ERROR")
+                return ok
+
+            # 自行解析（pretty_midi）并走事件入口（避免任何 mido 直通路径）
+            res = analyzer.parse_midi(file_path)
+            if not isinstance(res, dict) or not res.get('ok'):
                 if self.logger:
-                    self.logger.log(f"从MIDI文件播放: {file_path}", "DEBUG")
-                return bool(ap.start_auto_play_midi(file_path, tempo=tempo, key_mapping=key_mapping, strategy_name=strategy_name))
+                    self.logger.log(f"解析MIDI失败: {res.get('error') if isinstance(res, dict) else 'unknown'}", "ERROR")
+                return False
+            notes = res.get('notes') or []
+            # 解析来源与时序信息输出（用于诊断速度/时间问题）
+            try:
+                src = res.get('source')
+                total = int(res.get('total_notes') or len(notes))
+                end_time = float(res.get('end_time') or 0.0)
+                init_t = float(res.get('initial_tempo') or 0.0)
+                self.logger.log(
+                    f"[DEBUG] 解析完成: source={src}, total_notes={total}, end_time={end_time:.3f}s, initial_tempo={init_t}",
+                    "DEBUG"
+                )
+            except Exception:
+                pass
+            if not notes:
+                if self.logger:
+                    self.logger.log("解析到的音符为空", "ERROR")
+                return False
+            # 应用短音过滤与自动移调
+            notes2 = self._apply_pre_filters_and_transpose(notes)
+            if self.logger:
+                self.logger.log(
+                    f"[DEBUG] 解析得到事件数: {len(notes)}，过滤/移调后: {len(notes2)}，准备进入统一事件播放入口 (strategy={strategy_name}, tempo={tempo})",
+                    "DEBUG"
+                )
+            if not notes2:
+                if self.logger:
+                    self.logger.log("预处理后事件为空，终止播放", "ERROR")
+                return False
+            ok = bool(ap.start_auto_play_midi_events(notes2, tempo=tempo, key_mapping=key_mapping, strategy_name=strategy_name))
+            try:
+                ok = ok and bool(getattr(ap, 'is_playing', False))
+            except Exception:
+                pass
+            if self.logger and not ok:
+                self.logger.log("[DEBUG] AutoPlayer 启动失败（文件解析路径）", "ERROR")
+            return ok
         except Exception as e:
             if self.logger:
                 self.logger.log(f"播放启动失败: {e}", "ERROR")

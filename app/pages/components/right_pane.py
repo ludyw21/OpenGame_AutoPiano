@@ -44,13 +44,7 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         settings_inner = ttk.Frame(tab_settings)
         settings_inner.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-    # 1) 音高分组选择功能已移除，初始化默认值
-    if tab_settings is not None:
-        controller.pitch_group_vars = {}
-        # 为所有分组设置默认值为 True（全选）
-        for name in groups.ORDERED_GROUP_NAMES:
-            var = tk.BooleanVar(value=True)
-            controller.pitch_group_vars[name] = var
+    # 1) 音高分组选择功能已移除：不再初始化任何分组变量，避免触发分组筛选逻辑
 
     # 2) 主旋律提取（与 analyzer.extract_melody 参数对接）
     if tab_settings is not None:
@@ -82,33 +76,7 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         for i in range(5):
             mel_frame.columnconfigure(i, weight=1)
 
-    # 3) 预处理：整曲移调（自动/手动） -> app._analyze_current_midi 使用
-    if tab_settings is not None:
-        pre_frame = ttk.LabelFrame(settings_inner, text="预处理 · 整曲移调", padding="8")
-        pre_frame.pack(fill=tk.X, padx=6, pady=6)
-        controller.enable_preproc_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(pre_frame, text="启用预处理", variable=controller.enable_preproc_var).grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
-        controller.pretranspose_auto_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(pre_frame, text="自动选择白键占比最高", variable=controller.pretranspose_auto_var).grid(row=0, column=1, sticky=tk.W, padx=(12,4))
-        ttk.Label(pre_frame, text="手动移调(半音):").grid(row=1, column=0, sticky=tk.W, padx=4)
-        controller.pretranspose_semitones_var = tk.IntVar(value=0)
-        ttk.Spinbox(pre_frame, from_=-12, to=12, increment=1, width=8, textvariable=controller.pretranspose_semitones_var, state='normal').grid(row=1, column=1, sticky=tk.W)
-        ttk.Label(pre_frame, text="白键占比:").grid(row=1, column=2, sticky=tk.E, padx=(12,4))
-        controller.pretranspose_white_ratio_var = tk.StringVar(value="-")
-        ttk.Label(pre_frame, textvariable=controller.pretranspose_white_ratio_var).grid(row=1, column=3, sticky=tk.W)
-        for i in range(4):
-            pre_frame.columnconfigure(i, weight=1)
-
-    # 4) 预处理：最短音长过滤（仅非架子鼓）。在分部合并后、其他解析前生效。
-    if tab_settings is not None and (instrument or '').strip() not in ('架子鼓',):
-        dur_frame = ttk.LabelFrame(settings_inner, text="预处理 · 最短音长过滤", padding="8")
-        dur_frame.pack(fill=tk.X, padx=6, pady=6)
-        ttk.Label(dur_frame, text="丢弃短于(ms):").grid(row=0, column=0, sticky=tk.W, padx=4)
-        controller.min_note_duration_ms_var = tk.IntVar(value=15)
-        ttk.Spinbox(dur_frame, from_=0, to=2000, increment=10, width=10, textvariable=controller.min_note_duration_ms_var).grid(row=0, column=1, sticky=tk.W)
-        ttk.Label(dur_frame, text="0 表示关闭").grid(row=0, column=2, sticky=tk.W, padx=(12,0))
-        for i in range(3):
-            dur_frame.columnconfigure(i, weight=1)
+    # 预处理控件已迁移至左侧“解析”分页（playback_controls），此处不再重复渲染以避免冲突。
 
     # 5) 后处理：黑键移调 + 量化窗口 -> app._analyze_current_midi 使用
     if tab_settings is not None:

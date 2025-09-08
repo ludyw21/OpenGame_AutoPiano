@@ -237,4 +237,74 @@ class PlaylistManager:
             'loop_play': self.loop_play,
             'has_current': self.current_index >= 0,
             'current_item': self.get_current_item()
-        } 
+        }
+
+    # ========== 兼容 App 调用的导航 API ==========
+    def set_order_mode(self, mode: str) -> None:
+        """设置播放顺序模式。
+        支持值：'单曲'、'顺序'、'循环'、'随机'（与 UI 下拉一致）
+        - 单曲: 不自动跳下一首（next_index 返回 None）
+        - 顺序: 到末尾返回 None
+        - 循环: 到末尾回到 0
+        - 随机: 随机返回任意索引
+        """
+        try:
+            m = str(mode or '').strip()
+            if m == '随机':
+                self.random_play = True
+                self.loop_play = False
+            elif m == '循环':
+                self.random_play = False
+                self.loop_play = True
+            elif m == '单曲':
+                self.random_play = False
+                self.loop_play = False
+            else:
+                # 顺序
+                self.random_play = False
+                self.loop_play = False
+            try:
+                self.logger.log(f"播放模式: {m or '顺序'} (random={self.random_play}, loop={self.loop_play})", "DEBUG")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def select_index(self, idx: int) -> bool:
+        """选择当前索引（供 App 同步选中项）。不触发播放，仅更新指针。"""
+        if not isinstance(idx, int):
+            return False
+        if not (0 <= idx < len(self.playlist_items)):
+            return False
+        self.current_index = idx
+        return True
+
+    def next_index(self) -> Optional[int]:
+        """根据当前模式返回下一首索引；若无下一首返回 None。"""
+        n = len(self.playlist_items)
+        if n == 0:
+            return None
+        cur = self.current_index
+        # 单曲：不自动跳转
+        if not self.random_play and not self.loop_play and cur >= 0:
+            # 顺序或单曲，交由顺序逻辑判断
+            pass
+        # 随机模式
+        if self.random_play:
+            try:
+                import random
+                # 避免与当前相同（当 n>1 时）
+                if n > 1 and 0 <= cur < n:
+                    cand = list(range(n))
+                    cand.remove(cur)
+                    return random.choice(cand)
+                return random.randint(0, n - 1)
+            except Exception:
+                return 0 if n > 0 else None
+        # 顺序/循环模式
+        nxt = (cur + 1) if (0 <= cur < n) else 0
+        if nxt >= n:
+            if self.loop_play:
+                return 0
+            return None
+        return nxt
