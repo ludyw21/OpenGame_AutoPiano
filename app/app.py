@@ -2295,6 +2295,15 @@ class MeowFieldAutoPiano:
                 # 新增：回放阶段的整曲移调（手动/自动结果均通过该半音值体现）
                 'enable_pretranspose': enable_preproc,
                 'pretranspose_semitones': manual_semitones,
+                # 新增：高密度事件时序参数（鼓直通等场景优化）
+                # 适度提前发送，降低Windows调度抖动带来的卡音感
+                'send_ahead_ms': 10,
+                # 忙等阈值（毫秒），平衡CPU与精度
+                'spin_threshold_ms': 1,
+                # 单次按键动作后的微睡眠（毫秒），缓解驱动黏连
+                'post_action_sleep_ms': 0.5,
+                # 重触发最小间隔（毫秒），鼓连击更顺
+                'retrigger_min_gap_ms': 30,
                 # 短音过滤已在MIDI解析阶段完成，此处不再传递
             }
 
