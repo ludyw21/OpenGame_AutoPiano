@@ -246,6 +246,12 @@ class MeowFieldAutoPiano:
         self._last_split_parts = {}
         # 分部选择：记录用户在弹窗中勾选的分部名称集合
         self._selected_part_names = set()
+        # 分组筛选复选框变量容器（兜底初始化，避免 AttributeError）
+        try:
+            if not hasattr(self, 'pitch_group_vars') or not isinstance(getattr(self, 'pitch_group_vars'), dict):
+                self.pitch_group_vars = {}
+        except Exception:
+            self.pitch_group_vars = {}
 
     def _enable_acrylic(self):
         """启用整窗毛玻璃效果（Acrylic）。仅在 Windows 上有效，失败则静默忽略。"""
@@ -1011,11 +1017,34 @@ class MeowFieldAutoPiano:
                 messagebox.showerror("错误", f"解析失败: {res.get('error')}")
                 return
             notes = res.get('notes', [])
-            # 分部选择功能暂时禁用，直接使用pretty_midi解析的完整音符数据
-            # TODO: 需要重新实现分部选择以兼容pretty_midi数据格式
-            self._log_message(f"使用pretty_midi完整解析: {len(notes)} 个音符")
-            if hasattr(self, '_selected_part_names') and self._selected_part_names:
-                self._log_message("注意: 分部选择功能暂时禁用，使用完整MIDI数据", "WARNING")
+            # 应用分部过滤（若已识别分部且存在选择），使右侧解析与事件表与播放保持一致
+            try:
+                parts = getattr(self, '_last_split_parts', {}) or {}
+                sels = list(getattr(self, '_selected_part_names', set()) or [])
+                if parts and sels and getattr(self, 'playback_service', None):
+                    ps = self.playback_service
+                    # 下发选择条件
+                    if hasattr(ps, 'set_selected_parts_filter'):
+                        ps.set_selected_parts_filter(parts, sels)
+                    # 应用过滤（服务内部带有分层匹配与鼓保护、并输出诊断日志）
+                    try:
+                        filt = ps._apply_parts_filter(notes) if hasattr(ps, '_apply_parts_filter') else None
+                    except Exception:
+                        filt = None
+                    if isinstance(filt, list) and filt:
+                        self._log_message(f"[DEBUG] 分部过滤生效于解析: 输入={len(notes)} 输出={len(filt)}", "DEBUG")
+                        notes = filt
+                    else:
+                        # 若过滤为空，保留原始以避免界面空表，但给出提示
+                        try:
+                            self._log_message("[DEBUG] 分部过滤为空，解析界面回退为全曲事件", "WARN")
+                        except Exception:
+                            pass
+                else:
+                    # 无分部或未选择：记录全量
+                    self._log_message(f"使用pretty_midi完整解析: {len(notes)} 个音符")
+            except Exception:
+                self._log_message(f"使用pretty_midi完整解析: {len(notes)} 个音符")
             # 预处理：整曲移调（手动优先；否则自动；否则按手动值）
             if bool(getattr(self, 'enable_preproc_var', tk.BooleanVar(value=False)).get()) and notes:
                 try:
@@ -1684,17 +1713,105 @@ class MeowFieldAutoPiano:
                 messagebox.showwarning("提示", "未能识别到可用分部")
                 return
             self._last_split_parts = parts
-            # 填充左侧 Treeview
-            self._populate_parts_tree(parts)
-            # 根据拆分模式自动勾选
-            if split_mode == '智能聚类':
-                matched = self._ui_parts_auto_select_by_instrument_cluster()
-                if not matched:
-                    # 无匹配则回退为通道逻辑
-                    self._ui_parts_auto_select_by_channel()
+            # 若 Treeview 尚未创建，执行“无界面自动勾选”：仅更新 _parts_checked，待 Treeview 创建后由 _populate_parts_tree 渲染
+            tree_exists = bool(getattr(self, '_parts_tree', None))
+            if not tree_exists:
+                try:
+                    self._parts_checked = {}
+                    inst = str(getattr(self, 'current_instrument', '') or '')
+                    from collections import Counter
+                    # 定义 GM 家族
+                    fam = {
+                        '电子琴': set(range(0, 8)),
+                        '吉他': set(range(24, 32)),
+                        '贝斯': set(range(32, 40)),
+                    }
+                    selected = 0
+                    for name, sec in parts.items():
+                        # 读取 meta 与 notes
+                        try:
+                            if isinstance(sec, dict):
+                                meta = sec.get('meta', {}) or {}
+                                chan = meta.get('channel')
+                                prog = meta.get('program')
+                                notes = sec.get('notes', []) or []
+                            else:
+                                meta = getattr(sec, 'meta', {}) or {}
+                                chan = meta.get('channel')
+                                prog = meta.get('program')
+                                notes = getattr(sec, 'notes', []) or []
+                        except Exception:
+                            chan = None; prog = None; notes = []
+                        # 缺失时，从事件推断主通道/主 Program
+                        if (chan is None or prog is None) and notes:
+                            try:
+                                chs = [int(ev.get('channel')) for ev in notes if isinstance(ev, dict) and ev.get('type') in ('note_on','note_off') and ev.get('channel') is not None]
+                                progs = [int(ev.get('program')) for ev in notes if isinstance(ev, dict) and ev.get('type') in ('note_on','note_off') and ev.get('program') is not None]
+                                if chan is None and chs:
+                                    chan = Counter(chs).most_common(1)[0][0]
+                                if prog is None and progs:
+                                    prog = Counter(progs).most_common(1)[0][0]
+                            except Exception:
+                                pass
+                        hit = False
+                        if split_mode == '智能聚类':
+                            if inst == '架子鼓':
+                                hit = (chan is not None and int(chan) == 9)
+                            elif inst in ('电子琴','吉他','贝斯'):
+                                famset = fam.get(inst)
+                                if prog is not None and isinstance(prog, (int, float)):
+                                    try:
+                                        hit = (int(chan) != 9) and (int(prog) in famset)
+                                    except Exception:
+                                        hit = False
+                                else:
+                                    hit = False
+                            else:
+                                hit = (chan is not None and int(chan) != 9)
+                        else:
+                            # 仅通道模式：优先家族，退化为“非鼓”
+                            if inst == '架子鼓':
+                                hit = (chan is not None and int(chan) == 9)
+                            else:
+                                prefer = None
+                                if inst == '电子琴':
+                                    prefer = fam['电子琴']
+                                elif inst == '吉他':
+                                    prefer = fam['吉他']
+                                elif inst == '贝斯':
+                                    prefer = fam['贝斯']
+                                if prefer is not None and prog is not None:
+                                    try:
+                                        hit = (int(chan) != 9) and (int(prog) in prefer)
+                                    except Exception:
+                                        hit = (int(chan) != 9)
+                                else:
+                                    hit = (chan is not None and int(chan) != 9)
+                        self._parts_checked[name] = bool(hit)
+                        if hit:
+                            selected += 1
+                    if selected == 0:
+                        # 无匹配：全选
+                        for name in parts.keys():
+                            self._parts_checked[name] = True
+                        try:
+                            self._log_message("[DEBUG] Headless 自动勾选兜底为全选", "DEBUG")
+                        except Exception:
+                            pass
+                except Exception:
+                    # 异常兜底：全选
+                    self._parts_checked = {name: True for name in parts.keys()}
+                # 无 Tree 时只更新状态与日志
+                self._log_message("分部识别完成：已根据乐器在后台完成自动勾选（等待界面渲染）")
             else:
-                # 基于通道自动勾选（不再默认全选）
-                self._ui_parts_auto_select_by_channel()
+                # 填充左侧 Treeview 并执行可视化自动勾选
+                self._populate_parts_tree(parts)
+                if split_mode == '智能聚类':
+                    matched = self._ui_parts_auto_select_by_instrument_cluster()
+                    if not matched:
+                        self._ui_parts_auto_select_by_channel()
+                else:
+                    self._ui_parts_auto_select_by_channel()
             self._log_message("分部识别完成：请在左侧勾选需要的分部，然后点击‘应用所选分部并解析’。")
         except Exception as e:
             # 失败：记录错误并尽量不选中任何分部，避免误触发

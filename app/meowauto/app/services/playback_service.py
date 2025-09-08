@@ -38,6 +38,8 @@ class PlaybackService:
         self._parts_filter_prog: dict[tuple[int, int], int] | None = None  # {(track,channel): program}
         self._parts_filter_channels: set[int] | None = None  # {channel}
         self._parts_filter_ch_prog: dict[int, int] | None = None  # {channel: program}
+        self._parts_filter_tracks: set[int] | None = None  # {track index}
+        self._parts_selected_has_nondrum: bool = False
 
     def init_players(self) -> None:
         """延迟初始化播放器（占位）。"""
@@ -215,6 +217,8 @@ class PlaybackService:
                 self._parts_filter_prog = None
                 self._parts_filter_channels = None
                 self._parts_filter_ch_prog = None
+                self._parts_filter_tracks = None
+                self._parts_selected_has_nondrum = False
                 if self.logger:
                     self.logger.log("[DEBUG] 分部过滤: 已清除（未提供分部或选择为空）", "DEBUG")
                 return
@@ -222,12 +226,16 @@ class PlaybackService:
             prog_map: dict[tuple[int, int], int] = {}
             ch_set: set[int] = set()
             ch_prog: dict[int, int] = {}
+            tracks: set[int] = set()
+            sel_has_nondrum = False
             for name in selected_names:
                 sec = parts.get(name)
                 if not sec:
                     continue
                 meta = getattr(sec, 'meta', {}) if hasattr(sec, 'meta') else (sec.get('meta', {}) if isinstance(sec, dict) else {})
                 tr = meta.get('track'); ch = meta.get('channel'); pg = meta.get('program')
+                if tr is not None:
+                    tracks.add(int(tr))
                 if ch is not None:
                     ch_i = int(ch)
                     ch_set.add(ch_i)
@@ -238,14 +246,24 @@ class PlaybackService:
                     keys.add(key)
                     if pg is not None:
                         prog_map[key] = int(pg)
+                # 估计是否为非鼓分部
+                try:
+                    if pg is not None and int(pg) != 0:
+                        sel_has_nondrum = True
+                    if ch is not None and int(ch) != 9:
+                        sel_has_nondrum = True or sel_has_nondrum
+                except Exception:
+                    pass
             self._parts_filter_keys = keys or None
             self._parts_filter_prog = prog_map or None
             self._parts_filter_channels = ch_set or None
             self._parts_filter_ch_prog = ch_prog or None
+            self._parts_filter_tracks = tracks or None
+            self._parts_selected_has_nondrum = bool(sel_has_nondrum)
             if self.logger:
                 self.logger.log(
                     f"[DEBUG] 分部过滤: keys={len(self._parts_filter_keys or [])}, prog_keys={len(self._parts_filter_prog or {})}, "
-                    f"channels={len(self._parts_filter_channels or [])}, ch_prog={len(self._parts_filter_ch_prog or {})}",
+                    f"channels={len(self._parts_filter_channels or [])}, ch_prog={len(self._parts_filter_ch_prog or {})}, tracks={len(self._parts_filter_tracks or [])}, non_drum={self._parts_selected_has_nondrum}",
                     "DEBUG"
                 )
         except Exception:
@@ -253,6 +271,8 @@ class PlaybackService:
             self._parts_filter_prog = None
             self._parts_filter_channels = None
             self._parts_filter_ch_prog = None
+            self._parts_filter_tracks = None
+            self._parts_selected_has_nondrum = False
 
     def _apply_parts_filter(self, notes: List[Dict]) -> List[Dict]:
         """基于 (track,channel)[+program] 过滤事件；若过滤结果为空，则回退为原 notes。"""
@@ -263,27 +283,71 @@ class PlaybackService:
             prog = self._parts_filter_prog or {}
             chs = self._parts_filter_channels
             ch_prog = self._parts_filter_ch_prog or {}
-            if not keys and not chs:
+            tracks = self._parts_filter_tracks
+            if not keys and not chs and not prog and not ch_prog and not tracks:
                 return notes
+            # 统计可用字段占比（诊断用）
+            try:
+                has_track = sum(1 for n in notes if n.get('track') is not None)
+                has_channel = sum(1 for n in notes if n.get('channel') is not None)
+                has_program = sum(1 for n in notes if n.get('program') is not None)
+                total = len(notes)
+                if self.logger:
+                    self.logger.log(f"[DEBUG] 分部过滤前字段统计: total={total}, track={has_track}, channel={has_channel}, program={has_program}", "DEBUG")
+            except Exception:
+                pass
+            prog_set_diag = set(v for v in (list(prog.values()) + list(ch_prog.values())) if v is not None)
+            tier0 = tier1 = tier2 = tier3 = 0
             def keep(n: Dict) -> bool:
                 try:
+                    # 若选择明确包含非鼓，则丢弃鼓事件
+                    try:
+                        if self._parts_selected_has_nondrum and bool(n.get('is_drum')):
+                            return False
+                    except Exception:
+                        pass
                     c_val = n.get('channel')
                     c = int(c_val) if c_val is not None else None
                     t_val = n.get('track')
                     t = int(t_val) if t_val is not None else None
                     p_has = n.get('program')
-                    # 1) 优先使用 (track,channel) 精确匹配
+                    # 0) track-only 匹配（用于不同“通道语义”时的宽松对齐）
+                    if t is not None and tracks:
+                        if t in tracks:
+                            nonlocal tier0
+                            tier0 += 1
+                            return True
+                    # 1) 优先使用 (track,channel) 精确匹配（不命中则继续尝试下一层，不立即否决）
                     if t is not None and c is not None and keys:
-                        if (t, c) not in keys:
-                            return False
-                        p_need = prog.get((t, c))
-                        return True if p_need is None else ((p_has is None) or int(p_has) == int(p_need))
-                    # 2) 退回到“仅按通道”匹配（当 notes 无 track 字段时）
+                        if (t, c) in keys:
+                            p_need = prog.get((t, c))
+                            ok = True if p_need is None else ((p_has is None) or int(p_has) == int(p_need))
+                            if ok:
+                                nonlocal tier1
+                                tier1 += 1
+                                return True
+                        # 未命中，继续下一层
+                    # 2) 退回到“仅按通道”匹配（当 notes 无 track 字段时；不命中也继续）
                     if c is not None and chs:
-                        if c not in chs:
-                            return False
-                        p_need2 = ch_prog.get(c)
-                        return True if p_need2 is None else ((p_has is None) or int(p_has) == int(p_need2))
+                        if c in chs:
+                            p_need2 = ch_prog.get(c)
+                            ok2 = True if p_need2 is None else ((p_has is None) or int(p_has) == int(p_need2))
+                            if ok2:
+                                nonlocal tier2
+                                tier2 += 1
+                                return True
+                        # 未命中，继续下一层
+                    # 3) 最后退回到“仅按 program”匹配（track/channel 不可用或不一致时）
+                    if p_has is not None and (prog or ch_prog):
+                        if prog_set_diag:
+                            try:
+                                ok3 = int(p_has) in prog_set_diag
+                            except Exception:
+                                ok3 = False
+                            if ok3:
+                                nonlocal tier3
+                                tier3 += 1
+                            return ok3
                     # 无法判定：保守丢弃
                     return False
                 except Exception:
@@ -291,11 +355,15 @@ class PlaybackService:
             filtered = [n for n in notes if keep(n)]
             if filtered:
                 if self.logger:
-                    self.logger.log(f"[DEBUG] 分部过滤生效: 输入={len(notes)} 输出={len(filtered)}", "DEBUG")
+                    self.logger.log(f"[DEBUG] 分部过滤生效: 输入={len(notes)} 输出={len(filtered)} (tier0={tier0}, tier1={tier1}, tier2={tier2}, tier3={tier3}, prog_set={sorted(list(prog_set_diag))})", "DEBUG")
                 return filtered
             # 回退防无声
             if self.logger:
-                self.logger.log("[DEBUG] 分部过滤后为空，回退为原始事件", "WARN")
+                try:
+                    sample = ", ".join([f"(t={n.get('track')},c={n.get('channel')},p={n.get('program')})" for n in notes[:3]])
+                except Exception:
+                    sample = ""
+                self.logger.log(f"[DEBUG] 分部过滤后为空，回退为原始事件 (prog_set={sorted(list(prog_set_diag))}, sample={sample})", "WARN")
             return notes
         except Exception:
             return notes

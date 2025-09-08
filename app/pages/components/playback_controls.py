@@ -500,6 +500,42 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                     (getattr(controller, '_schedule_compute_white_rate', None) or _schedule_compute_white_rate)(200)
                 except Exception:
                     _schedule_compute_white_rate(200)
+                # 新增：当文件路径变更时，依据当前乐器自动识别并勾选分部并立即解析（便于导入即用）
+                try:
+                    # 架子鼓不需要分部识别
+                    cur_inst = str(getattr(controller, 'current_instrument', '') or '')
+                    if cur_inst != '架子鼓':
+                        # 识别并在左侧树中展示分部，同时根据模式/乐器自动勾选
+                        if hasattr(controller, '_ui_select_partitions'):
+                            controller._ui_select_partitions()
+                            # 不在此处自动“应用并解析”，仅完成勾选，保持与用户操作一致
+                            # 若完全无勾选，兜底一次全选，避免后续流程无选择
+                            try:
+                                sels = controller._get_parts_checked_names() if hasattr(controller, '_get_parts_checked_names') else []
+                            except Exception:
+                                sels = []
+                            if not sels and hasattr(controller, '_ui_parts_select_all'):
+                                controller._ui_parts_select_all()
+                                try:
+                                    controller._log_message("[DEBUG] 自动勾选兜底为全选", "DEBUG")
+                                except Exception:
+                                    pass
+                            # 立即应用并解析（异步调度避免UI阻塞）
+                            try:
+                                if hasattr(controller, 'root') and hasattr(controller, '_ui_apply_selected_parts_and_analyze'):
+                                    controller.root.after(10, controller._ui_apply_selected_parts_and_analyze)
+                                elif hasattr(controller, '_ui_apply_selected_parts_and_analyze'):
+                                    controller._ui_apply_selected_parts_and_analyze()
+                            except Exception:
+                                pass
+                            # 再次异步触发一次“仅分部识别与勾选”，用于 UI 树控件在稍后渲染完成后与后台选择同步
+                            try:
+                                if hasattr(controller, 'root') and hasattr(controller, '_ui_select_partitions'):
+                                    controller.root.after(250, controller._ui_select_partitions)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
             # 绑定到 controller，便于其他文件调用
             controller._on_midi_path_changed = _on_midi_path_changed
