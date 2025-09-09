@@ -122,6 +122,35 @@ def parse_midi(file_path: str) -> Dict[str, Any]:
                         rec['group'] = group_for_note(rec['note'])
                         notes.append(rec)
                 notes.sort(key=lambda x: x['start_time'])
+
+                # 对齐旧版：若 t≈0 存在多条 tempo 且 BPM 不同，选慢速BPM并整体缩放
+                try:
+                    tmps = getattr(midi_obj, 'tempo_changes', []) or []
+                    # miditoolkit 的 tempo_changes 元素一般含 .time(秒) 与 .tempo(BPM)
+                    zero_bpms_mt = []
+                    for tc in tmps:
+                        try:
+                            t0 = float(getattr(tc, 'time', 0.0) or 0.0)
+                            bpm0 = float(getattr(tc, 'tempo', initial_tempo))
+                            if t0 <= 1e-9:
+                                zero_bpms_mt.append(bpm0)
+                        except Exception:
+                            continue
+                    if zero_bpms_mt:
+                        desired_bpm_mt = min(zero_bpms_mt)
+                        cur_bpm_mt = float(initial_tempo)
+                        if desired_bpm_mt > 0 and cur_bpm_mt > 0 and desired_bpm_mt < (cur_bpm_mt - 1e-6):
+                            scale_mt = cur_bpm_mt / desired_bpm_mt
+                            for e in notes:
+                                st = float(e.get('start_time', 0.0)) * scale_mt
+                                et = float(e.get('end_time', st)) * scale_mt
+                                e['start_time'] = st
+                                e['end_time'] = et
+                                e['duration'] = max(0.0, et - st)
+                            initial_tempo = desired_bpm_mt
+                            end_time = float(end_time) * scale_mt if end_time else (notes[-1]['end_time'] if notes else 0.0)
+                except Exception:
+                    pass
                 channels = sorted({n['channel'] for n in notes}) if notes else []
                 out = {
                     'ok': True,
@@ -149,13 +178,82 @@ def parse_midi(file_path: str) -> Dict[str, Any]:
             pm_data = pretty_midi.PrettyMIDI(file_path)
             notes = _gather_notes(pm_data)
             channels = sorted({n['channel'] for n in notes}) if notes else []
+            # pretty_midi.get_tempo_changes() -> (times, tempi[BPM])
             tempo_changes = pm_data.get_tempo_changes()
-            initial_tempo = tempo_changes[1][0] if len(tempo_changes[1]) > 0 else 120.0
+            times_arr = tempo_changes[0] if len(tempo_changes) > 0 else []
+            tempi_arr = tempo_changes[1] if len(tempo_changes) > 1 else []
+            initial_tempo = float(tempi_arr[0]) if len(tempi_arr) > 0 else 120.0
             end_time = pm_data.get_end_time()
+
+            # 当同一时刻（t≈0）存在多个 set_tempo 时，优先采用更慢的起始BPM（对齐旧版感知），
+            # 并将事件的绝对秒时间进行全局缩放，使整体时长贴近旧版。
+            applied_initial_tempo_scale = False
+            try:
+                zero_bpms = [float(tempi_arr[i]) for i, t in enumerate(times_arr) if float(t) <= 1e-9]
+                if zero_bpms:
+                    desired_bpm = min(zero_bpms)  # 更慢的BPM
+                    current_bpm = float(initial_tempo)
+                    if desired_bpm > 0 and current_bpm > 0 and desired_bpm < (current_bpm - 1e-6):
+                        scale = current_bpm / desired_bpm  # >1 放慢
+                        # 缩放所有音符时间与时长
+                        for e in notes:
+                            st = float(e.get('start_time', 0.0)) * scale
+                            et = float(e.get('end_time', st)) * scale
+                            e['start_time'] = st
+                            e['end_time'] = et
+                            e['duration'] = max(0.0, et - st)
+                        # 更新初始BPM与总时长
+                        initial_tempo = desired_bpm
+                        end_time = float(end_time) * scale if end_time else (notes[-1]['end_time'] if notes else 0.0)
+                        applied_initial_tempo_scale = True
+            except Exception:
+                # 任何异常下维持原pretty_midi时序
+                pass
+
+            # 若 pretty_midi 未暴露同刻多tempo（zero_bpms仅1个或为空），尝试用 mido 探测 tick=0 的多 tempo 冲突
+            if not applied_initial_tempo_scale:
+                try:
+                    import mido  # type: ignore
+                    mf = mido.MidiFile(file_path)
+                    # 收集所有轨道的绝对tick，并抓取 tick==0 的 set_tempo（微秒/拍）
+                    tempos_at_zero: list[int] = []
+                    for track in mf.tracks:
+                        tick = 0
+                        for msg in track:
+                            tick += msg.time
+                            if getattr(msg, 'type', None) == 'set_tempo':
+                                if tick == 0:
+                                    try:
+                                        tempos_at_zero.append(int(msg.tempo))
+                                    except Exception:
+                                        pass
+                            # 避免遍历整首，超过少量事件后可跳出（性能优化）
+                            if tick > 0 and len(tempos_at_zero) >= 2:
+                                break
+                        if len(tempos_at_zero) >= 2:
+                            break
+                    if tempos_at_zero:
+                        # 将微秒/拍转换为 BPM：60_000_000 / tempo
+                        bpms = [60_000_000.0 / max(1, t) for t in tempos_at_zero]
+                        desired_bpm2 = min(bpms)
+                        current_bpm2 = float(initial_tempo)
+                        if desired_bpm2 > 0 and current_bpm2 > 0 and desired_bpm2 < (current_bpm2 - 1e-6):
+                            scale2 = current_bpm2 / desired_bpm2
+                            for e in notes:
+                                st = float(e.get('start_time', 0.0)) * scale2
+                                et = float(e.get('end_time', st)) * scale2
+                                e['start_time'] = st
+                                e['end_time'] = et
+                                e['duration'] = max(0.0, et - st)
+                            initial_tempo = desired_bpm2
+                            end_time = float(end_time) * scale2 if end_time else (notes[-1]['end_time'] if notes else 0.0)
+                            applied_initial_tempo_scale = True
+                except Exception:
+                    pass
             if notes and end_time > 0:
                 # 可选一致性校验：与 miditoolkit 对比若差异过大则回退
                 try:
-                    if miditoolkit is not None:
+                    if miditoolkit is not None and not applied_initial_tempo_scale:
                         midi_obj = miditoolkit.midi.parser.MidiFile(file_path)
                         mk_notes: List[Dict[str, Any]] = []
                         for ti, inst in enumerate(midi_obj.instruments):

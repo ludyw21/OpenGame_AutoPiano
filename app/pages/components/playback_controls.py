@@ -411,7 +411,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
             ttk.Label(parse_settings, text="解析引擎:").grid(row=3, column=0, sticky=tk.W, pady=(8,0))
             controller._engine_label_to_value = {'自动': 'auto', 'pretty_midi': 'pretty_midi', 'miditoolkit': 'miditoolkit'}
             controller._engine_value_to_label = {v: k for k, v in controller._engine_label_to_value.items()}
-            controller.parser_engine_var = tk.StringVar(value='miditoolkit')
+            controller.parser_engine_var = tk.StringVar(value='pretty_midi')
             engine_combo = ttk.Combobox(parse_settings, textvariable=controller.parser_engine_var, state='readonly', width=14,
                                         values=list(controller._engine_label_to_value.keys()))
             engine_combo.grid(row=3, column=1, sticky=tk.W)

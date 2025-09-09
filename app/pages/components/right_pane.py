@@ -102,7 +102,8 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
     # 7) 回放 · 和弦伴奏（下发至 AutoPlayer）。注意：黑键移调仅在"后处理"中提供。
     # 仅架子鼓禁用和弦功能；其他乐器可用
     current_instrument = (instrument or '').strip()
-    show_chord_accomp = current_instrument not in ('架子鼓',)
+    # 禁用和弦伴奏的乐器：架子鼓、贝斯
+    show_chord_accomp = current_instrument not in ('架子鼓', '贝斯')
     if tab_settings is not None and show_chord_accomp:
         play_frame = ttk.LabelFrame(settings_inner, text="回放 · 和弦伴奏", padding="8")
         play_frame.pack(fill=tk.X, padx=6, pady=6)
@@ -110,7 +111,7 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         controller.enable_chord_accomp_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(play_frame, text="启用和弦伴奏", variable=controller.enable_chord_accomp_var).grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
         ttk.Label(play_frame, text="和弦最短持续(ms):").grid(row=1, column=1, sticky=tk.E, padx=(12,4))
-        controller.chord_min_sustain_ms_var = tk.IntVar(value=1500)
+        controller.chord_min_sustain_ms_var = tk.IntVar(value=120)
         ttk.Spinbox(play_frame, from_=100, to=5000, increment=50, width=10, textvariable=controller.chord_min_sustain_ms_var).grid(row=1, column=2, sticky=tk.W)
         ttk.Label(play_frame, text="块和弦窗口(ms):").grid(row=2, column=2, sticky=tk.E, padx=(12,4))
         controller.chord_block_window_ms_var = tk.IntVar(value=50)
@@ -120,10 +121,9 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         for i in range(4):
             play_frame.columnconfigure(i, weight=1)
 
-    # 8) 架子鼓禁用和弦（兜底设置）
+    # 8) 禁用和弦（兜底设置）：当为架子鼓或贝斯时，不渲染伴奏控件，但保持变量存在
     if tab_settings is not None and not show_chord_accomp:
-        # 为贝斯和架子鼓设置默认值（禁用和弦）
-        controller.chord_min_sustain_ms_var = tk.IntVar(value=1500)
+        controller.chord_min_sustain_ms_var = tk.IntVar(value=120)
         controller.chord_replace_melody_var = tk.BooleanVar(value=False)
         controller.chord_block_window_ms_var = tk.IntVar(value=50)
 
