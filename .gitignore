@@ -7,9 +7,7 @@ __pycache__/
 
 # Build artifacts
 build/
-dist/
 app/build/
-app/dist/
 
 # Logs & temp outputs
 logs/
@@ -23,3 +21,5 @@ temp/
 .DS_Store
 Thumbs.db
 .vscode/
+
+打包全流程.md
