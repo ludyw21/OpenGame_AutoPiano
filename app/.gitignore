@@ -10,7 +10,7 @@ logs/
 .ogg/
 .wav/
 .wma/
-.pyc/
+*.pyc
 
 build/
 
