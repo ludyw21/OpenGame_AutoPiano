@@ -349,12 +349,15 @@ class MeowFieldAutoPiano:
     def _bind_hotkeys(self):
         """绑定热键"""
         try:
-            # 空格键：播放/暂停
-            self.root.bind('<space>', self._on_space_key)
-            # ESC键：停止
-            self.root.bind('<Escape>', self._on_escape_key)
-            # Ctrl+S：停止自动演奏
-            self.root.bind('<Control-s>', self._on_ctrl_s_key)
+            # 清理所有既有窗口级快捷键，避免与“仅保留 Ctrl+Shift+C”冲突
+            try:
+                for seq in ('<space>', '<Space>', '<Escape>', '<ESC>', '<Control-s>', '<Control-S>'):
+                    try:
+                        self.root.unbind_all(seq)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             # Ctrl+Shift+C：停止所有播放（优先绑定全局，降级为窗口内）
             try:
                 import threading
@@ -371,22 +374,24 @@ class MeowFieldAutoPiano:
                 # 注册系统级热键（后台线程，避免阻塞）
                 def _register_kb():
                     try:
+                        # 先清理所有已注册的全局热键，确保只保留我们需要的
+                        try:
+                            keyboard.clear_all_hotkeys()
+                        except Exception:
+                            pass
+                        # 仅注册 Ctrl+Shift+C 用于停止所有播放
                         keyboard.add_hotkey('ctrl+shift+c', _hotkey_stop, suppress=False)
-                        # 全局空格：暂停/恢复（不抑制系统事件）
-                        keyboard.add_hotkey('space', lambda: self.root.after(0, lambda: self._on_space_key(None)), suppress=False)
-                        # 全局 ESC：停止
-                        keyboard.add_hotkey('esc', lambda: self.root.after(0, lambda: self._on_escape_key(None)), suppress=False)
                     except Exception:
                         pass
                 t = threading.Thread(target=_register_kb, daemon=True)
                 t.start()
-                self._log_message("全局热键已注册: 空格(暂停/恢复), ESC(停止), Ctrl+Shift+C(停止播放)")
+                self._log_message("全局热键已注册: Ctrl+Shift+C(停止所有播放)")
             except Exception:
                 # 回退到窗口级绑定
                 self.root.bind('<Control-Shift-C>', lambda e: (self._stop_auto_play(), self._stop_playback()))
-                self._log_message("窗口热键已注册: 空格, ESC, Ctrl+S, Ctrl+Shift+C")
+                self._log_message("窗口热键已注册: Ctrl+Shift+C")
             
-            self._log_message("热键绑定完成: 空格键(开始/暂停/恢复), ESC键(停止), Ctrl+S(停止自动演奏), Ctrl+Shift+C(停止播放)")
+            self._log_message("热键绑定完成: 仅注册 Ctrl+Shift+C(停止所有播放)")
         except Exception as e:
             self._log_message(f"热键绑定失败: {str(e)}", "ERROR")
     
