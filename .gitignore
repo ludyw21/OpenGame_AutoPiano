@@ -1,0 +1,25 @@
+﻿# Python bytecode
+*.pyc
+__pycache__/
+
+# Virtual environments
+.venv/
+
+# Build artifacts
+build/
+app/build/
+
+# Logs & temp outputs
+logs/
+output/
+temp/
+
+# Local task files
+.tasks/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+打包全流程.md
