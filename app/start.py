@@ -8,13 +8,60 @@ MeowField AutoPiano 启动脚本
 import sys
 import os
 import traceback
+import ctypes
 from pathlib import Path
 
+
+def is_admin():
+    """检查当前是否具有管理员权限"""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+def run_as_admin():
+    """以管理员权限重新启动当前脚本"""
+    if is_admin():
+        return True
+    else:
+        # 获取当前脚本的完整路径
+        script_path = os.path.abspath(__file__)
+        
+        # 使用ShellExecute以管理员权限运行
+        try:
+            ctypes.windll.shell32.ShellExecuteW(
+                None, 
+                "runas", 
+                sys.executable, 
+                f'"{script_path}"', 
+                None, 
+                1
+            )
+            return True
+        except Exception as e:
+            print(f"申请管理员权限失败: {e}")
+            return False
 
 def main():
     """主函数"""
     print("🎹 MeowField AutoPiano v1.0.6 启动脚本")
     print("=" * 50)
+    
+    # 检查管理员权限
+    if not is_admin():
+        print("⚠️  需要管理员权限来访问MIDI设备和系统资源")
+        print("正在申请管理员权限...")
+        
+        if run_as_admin():
+            print("✅ 管理员权限申请成功，程序将重新启动")
+            return
+        else:
+            print("❌ 管理员权限申请失败")
+            print("请右键点击程序图标，选择'以管理员身份运行'")
+            input("按回车键退出...")
+            return
+    else:
+        print("✅ 检测到管理员权限")
     
     # 检查Python版本
     if sys.version_info < (3, 8):

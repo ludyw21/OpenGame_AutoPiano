@@ -17,6 +17,7 @@ import time
 import sys
 import tempfile
 import uuid
+import ctypes
 from typing import Dict, Any, Optional
 
 # 导入自定义模块
@@ -67,6 +68,9 @@ class MeowFieldAutoPiano:
     
     def __init__(self):
         """初始化应用程序"""
+        # 检查管理员权限
+        self._check_admin_privileges()
+        
         # 创建主窗口（ttkbootstrap 优先）
         if 'ttkb' in globals() and ttkb is not None:
             try:
@@ -3682,6 +3686,19 @@ class MeowFieldAutoPiano:
                 pass
         except Exception:
             pass
+    
+    def _check_admin_privileges(self):
+        """检查管理员权限"""
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+            if not is_admin:
+                print("⚠️  警告: 程序未以管理员权限运行")
+                print("某些功能可能无法正常工作，建议以管理员身份运行")
+                # 不强制退出，只是警告
+            else:
+                print("✅ 检测到管理员权限")
+        except Exception as e:
+            print(f"⚠️  无法检查管理员权限: {e}")
     
     def run(self):
         """运行应用程序"""

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 """
 音频->MIDI 统一入口（统一封装 PianoTrans.exe 与后备的 AudioConverter）
 返回 (ok: bool, output_path: str, err_msg: str | None, logs: dict)
@@ -9,7 +10,6 @@ logs: { 'stdout': str, 'stderr': str, 'elapsed': float }
 by薮薮猫猫
 本软件开源且免费，如果你是付费购买请申请退款，并从官方渠道获取。
 """
-from __future__ import annotations
 import os
 import time
 from typing import Tuple, Optional, Dict
