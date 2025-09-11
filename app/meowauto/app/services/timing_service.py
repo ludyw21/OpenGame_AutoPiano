@@ -28,10 +28,8 @@ class TimingService:
     def __init__(self, logger: Optional[Any] = None, *, tk_root: Optional[object] = None):
         self.logger = logger or Logger()
         self.tk_root = tk_root
-        # 默认使用网络时钟（若失败则回退本地）
-        self.clock = NetworkClockProvider() if NetworkClockProvider else None
-        if not self.clock:
-            self.clock = LocalClock() if LocalClock else None
+        # 启动时不进行网络对时，避免卡顿；默认先用本地时钟，待用户操作或创建计划时再进行对时
+        self.clock = LocalClock() if LocalClock else None
         self.manual_compensation_ms: int = 0
         self.last_latency_ms: float = 0.0
         self.last_sys_delta_ms: float = 0.0  # NTP时间与系统time.time()的差值（毫秒）
@@ -46,7 +44,7 @@ class TimingService:
         self.last_local_chain_ms: float = 0.0
         self.include_ntp_delta: bool = True  # 是否将 NTP-本地偏差并入合成偏移与触发计算
 
-        # 初始化时从配置加载默认设置（若可用）
+        # 初始化时从配置加载默认设置（若可用），但不主动对时，避免启动卡顿
         try:
             from meowauto.core.config import ConfigManager  # type: ignore
             cfg = ConfigManager()
@@ -61,21 +59,37 @@ class TimingService:
             threshold = float(cfg.get('ntp.adjust_threshold_ms', 5.0))
             self.include_ntp_delta = bool(cfg.get('ntp.include_delta', True))
             self.set_resync_settings(interval, threshold)
-            if en:
-                self.configure_ntp(servers=servers)
-            else:
-                self.use_local()
+            self.ntp_enabled = bool(en)
+            self.ntp_servers = list(servers)
+            # 不调用 configure_ntp()，延迟到用户点击或创建计划时
         except Exception:
-            # 回退到内置默认：启用NTP + 腾讯/授时中心
-            try:
-                self.configure_ntp(servers=[
+            # 回退到内置默认参数，但仍不主动联网
+            self.ntp_enabled = True
+            self.ntp_servers = [
+                'ntp.ntsc.ac.cn',
+                'time1.cloud.tencent.com',
+                'time2.cloud.tencent.com',
+                'time3.cloud.tencent.com',
+            ]
+
+    def _ensure_clock_initialized(self) -> None:
+        """在需要时将 clock 切换为网络时钟（不在 __init__ 主动执行，避免启动卡顿）。"""
+        try:
+            if not self.ntp_enabled:
+                return
+            if NetworkClockProvider is None:
+                return
+            # 如果当前不是网络时钟，则按保存的服务器列表实例化
+            if not self.clock or (LocalClock and isinstance(self.clock, LocalClock)):
+                servers = self.ntp_servers or [
                     'ntp.ntsc.ac.cn',
                     'time1.cloud.tencent.com',
                     'time2.cloud.tencent.com',
                     'time3.cloud.tencent.com',
-                ])
-            except Exception:
-                pass
+                ]
+                self.clock = NetworkClockProvider(servers=servers, timeout=1.5, max_tries=3)
+        except Exception:
+            pass
 
     # —— 对时相关 ——
     def configure_ntp(self, servers: Optional[list] = None, timeout: float = 1.5, max_tries: int = 3) -> bool:
@@ -341,6 +355,8 @@ class TimingService:
 
         # 立即刷新一次对时与本地链路延迟，便于UI立刻显示
         try:
+            # 若需要网络对时，确保此时才实例化网络时钟，避免应用启动时卡顿
+            self._ensure_clock_initialized()
             if self.ntp_enabled and hasattr(self.clock, 'sync'):
                 _ = self.clock.sync()
             if self.ntp_enabled and hasattr(self.clock, 'measure_latency'):
