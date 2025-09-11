@@ -645,6 +645,12 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         if instrument:
             banner = ttk.Label(ctrl_inner, text=f"当前乐器: {instrument}", foreground="#0A84FF")
             banner.pack(side=tk.TOP, anchor=tk.W, padx=10, pady=(8, 0))
+            # 将当前乐器注入控制器桥接，便于定时计划读取
+            try:
+                if hasattr(controller, 'playback_controller') and controller.playback_controller:
+                    controller.playback_controller.current_instrument = instrument
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -690,6 +696,189 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         ttk.Label(av_frame, text="倍速:").pack(side=tk.LEFT)
         controller.tempo_var = tk.DoubleVar(value=1.0)
         ttk.Spinbox(av_frame, from_=0.25, to=3.0, increment=0.05, textvariable=controller.tempo_var, width=8).pack(side=tk.LEFT, padx=(10, 16))
+
+        # 定时触发（单次）
+        timing_frame = ttk.LabelFrame(ctrl_inner, text="定时触发（单次·NTP对时+延迟/补偿）", padding="10")
+        timing_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
+        # 时间输入：HH:MM:SS.mmm
+        ttk.Label(timing_frame, text="目标时间(24h):").grid(row=0, column=0, sticky=tk.W)
+        controller.timing_hh_var = tk.IntVar(value=17)
+        controller.timing_mm_var = tk.IntVar(value=0)
+        controller.timing_ss_var = tk.IntVar(value=0)
+        controller.timing_ms_var = tk.IntVar(value=0)
+        ttk.Spinbox(timing_frame, from_=0, to=23, width=4, textvariable=controller.timing_hh_var).grid(row=0, column=1, sticky=tk.W)
+        ttk.Label(timing_frame, text=":").grid(row=0, column=2, sticky=tk.W)
+        ttk.Spinbox(timing_frame, from_=0, to=59, width=4, textvariable=controller.timing_mm_var).grid(row=0, column=3, sticky=tk.W)
+        ttk.Label(timing_frame, text=":").grid(row=0, column=4, sticky=tk.W)
+        ttk.Spinbox(timing_frame, from_=0, to=59, width=4, textvariable=controller.timing_ss_var).grid(row=0, column=5, sticky=tk.W)
+        ttk.Label(timing_frame, text=".").grid(row=0, column=6, sticky=tk.W)
+        ttk.Spinbox(timing_frame, from_=0, to=999, width=6, textvariable=controller.timing_ms_var).grid(row=0, column=7, sticky=tk.W)
+
+        # 对时控制（执行后刷新状态）
+        def _btn_enable_net():
+            getattr(controller.playback_controller, '_timing_enable_network_clock', lambda: None)()
+            _refresh_timing_status(delay_ms=50)
+        def _btn_sync_now():
+            getattr(controller.playback_controller, '_timing_sync_now', lambda: None)()
+            _refresh_timing_status(delay_ms=50)
+        def _btn_use_local():
+            getattr(controller.playback_controller, '_timing_use_local', lambda: None)()
+            _refresh_timing_status(delay_ms=50)
+        ttk.Button(timing_frame, text="启用公网对时", command=_btn_enable_net).grid(row=1, column=0, sticky=tk.W, pady=(6,0))
+        ttk.Button(timing_frame, text="手动对时", command=_btn_sync_now).grid(row=1, column=1, sticky=tk.W, padx=(6,0), pady=(6,0))
+        ttk.Button(timing_frame, text="切回本地时钟", command=_btn_use_local).grid(row=1, column=2, sticky=tk.W, padx=(6,0), pady=(6,0))
+
+        # NTP 服务器选择/关闭
+        ttk.Label(timing_frame, text="NTP服务器(逗号分隔):").grid(row=4, column=0, sticky=tk.W, pady=(6,0))
+        try:
+            default_servers = "ntp.ntsc.ac.cn,time1.cloud.tencent.com,time2.cloud.tencent.com"
+            controller.timing_servers_var = tk.StringVar(value=default_servers)
+        except Exception:
+            pass
+        server_entry = ttk.Entry(timing_frame, textvariable=controller.timing_servers_var, width=48)
+        server_entry.grid(row=4, column=1, columnspan=4, sticky=tk.W+tk.E, padx=(6,0), pady=(6,0))
+        def _apply_servers():
+            getattr(controller.playback_controller, '_timing_apply_servers', lambda: None)()
+            _refresh_timing_status(delay_ms=100)
+        ttk.Button(timing_frame, text="应用服务器", style=styles['secondary'], command=_apply_servers).grid(row=4, column=5, sticky=tk.W, padx=(6,0), pady=(6,0))
+        controller.ntp_enabled_var = tk.BooleanVar(value=True)
+        def _toggle_ntp():
+            getattr(controller.playback_controller, '_timing_toggle_ntp', lambda *_: None)(controller.ntp_enabled_var.get())
+            _refresh_timing_status(delay_ms=100)
+        ttk.Checkbutton(timing_frame, text="启用NTP", variable=controller.ntp_enabled_var, command=_toggle_ntp).grid(row=4, column=6, sticky=tk.W, padx=(12,0), pady=(6,0))
+
+        # 对时参数：间隔与重排阈值
+        ttk.Label(timing_frame, text="对时间隔(s):").grid(row=5, column=0, sticky=tk.W, pady=(6,0))
+        controller.timing_resync_interval_var = tk.DoubleVar(value=1.0)
+        ttk.Spinbox(timing_frame, from_=0.2, to=10.0, increment=0.2, width=8, textvariable=controller.timing_resync_interval_var).grid(row=5, column=1, sticky=tk.W, padx=(6,0), pady=(6,0))
+        ttk.Label(timing_frame, text="重排阈值(ms):").grid(row=5, column=2, sticky=tk.W, pady=(6,0))
+        controller.timing_adjust_threshold_var = tk.DoubleVar(value=5.0)
+        ttk.Spinbox(timing_frame, from_=1.0, to=1000.0, increment=1.0, width=10, textvariable=controller.timing_adjust_threshold_var).grid(row=5, column=3, sticky=tk.W, padx=(6,0), pady=(6,0))
+        def _apply_resync_params():
+            try:
+                interval = float(controller.timing_resync_interval_var.get())
+            except Exception:
+                interval = None
+            try:
+                thr = float(controller.timing_adjust_threshold_var.get())
+            except Exception:
+                thr = None
+            getattr(controller.playback_controller, '_timing_set_resync_settings', lambda *_: None)(interval, thr)
+            _refresh_timing_status(delay_ms=100)
+        ttk.Button(timing_frame, text="应用对时参数", style=styles['secondary'], command=_apply_resync_params).grid(row=5, column=4, sticky=tk.W, padx=(6,0), pady=(6,0))
+
+        # 手动补偿与状态
+        ttk.Label(timing_frame, text="手动补偿(ms):").grid(row=2, column=0, sticky=tk.W, pady=(6,0))
+        controller.timing_manual_ms_var = tk.IntVar(value=0)
+        ttk.Spinbox(timing_frame, from_=-2000, to=2000, increment=1, width=8, textvariable=controller.timing_manual_ms_var).grid(row=2, column=1, sticky=tk.W, padx=(6,0), pady=(6,0))
+        controller.timing_status_var = tk.StringVar(value="状态: 未对时")
+        ttk.Label(timing_frame, textvariable=controller.timing_status_var, foreground="#666").grid(row=2, column=2, columnspan=6, sticky=tk.W, padx=(12,0), pady=(6,0))
+
+        # 操作按钮
+        def _btn_schedule():
+            getattr(controller.playback_controller, '_timing_schedule_for_current_instrument', lambda: None)()
+            # 计划创建后立即刷新一次，便于看到“实时对时/延迟”
+            _refresh_timing_status(delay_ms=50)
+        def _btn_cancel():
+            getattr(controller.playback_controller, '_timing_cancel_schedule', lambda: None)()
+            _refresh_timing_status(delay_ms=50)
+        def _btn_test_now():
+            getattr(controller.playback_controller, '_timing_test_now', lambda: None)()
+            _refresh_timing_status(delay_ms=50)
+        ttk.Button(timing_frame, text="创建计划", style=styles['primary'], command=_btn_schedule).grid(row=3, column=0, sticky=tk.W, pady=(8,0))
+        ttk.Button(timing_frame, text="取消计划", style=styles['warning'], command=_btn_cancel).grid(row=3, column=1, sticky=tk.W, padx=(6,0), pady=(8,0))
+        ttk.Button(timing_frame, text="立即按计划测试一次", style=styles['info'], command=_btn_test_now).grid(row=3, column=2, sticky=tk.W, padx=(6,0), pady=(8,0))
+        for c in range(8):
+            try:
+                timing_frame.grid_columnconfigure(c, weight=1)
+            except Exception:
+                pass
+
+        # 状态刷新函数：读取控制器桥接，显示 provider/sys_delta/rtt/manual/auto/net_shift/local_chain/next/倒计时（分行，保留两位小数）
+        def _refresh_timing_status(delay_ms: int = 0):
+            def _do():
+                try:
+                    pc = getattr(controller, 'playback_controller', None)
+                    if pc and hasattr(pc, '_timing_get_ui_status'):
+                        st = pc._timing_get_ui_status() or {}
+                        provider = st.get('provider', 'Local')
+                        delta = st.get('sys_delta_ms', 0.0)
+                        rtt = st.get('rtt_ms', 0.0)
+                        manual = st.get('manual_compensation_ms', 0.0)
+                        auto_latency = st.get('auto_latency_ms', None)
+                        net_shift = st.get('net_shift_ms', None)
+                        local_chain = st.get('local_chain_ms', None)
+                        next_fire = st.get('next_fire', '')
+                        remaining = st.get('remaining_ms')
+                        # 倒计时格式化
+                        def _fmt_ms(ms):
+                            try:
+                                ms = int(ms)
+                                s, msec = divmod(ms, 1000)
+                                h, rem = divmod(s, 3600)
+                                m, sec = divmod(rem, 60)
+                                return f"{h:02d}:{m:02d}:{sec:02d}.{msec:03d}"
+                            except Exception:
+                                return "--:--:--.---"
+                        lines = []
+                        lines.append(f"来源: {provider}")
+                        lines.append(f"NTP-本地偏差: {float(delta):.2f} ms")
+                        lines.append(f"网络往返延迟: {float(rtt):.2f} ms")
+                        if auto_latency is not None:
+                            try:
+                                lines.append(f"自动延迟(估计): {float(auto_latency):.2f} ms")
+                            except Exception:
+                                lines.append(f"自动延迟(估计): {auto_latency} ms")
+                        lines.append(f"手动补偿: {float(manual):.2f} ms")
+                        if net_shift is not None:
+                            try:
+                                lines.append(f"合成偏移(正=延后,负=提前): {float(net_shift):.2f} ms")
+                            except Exception:
+                                lines.append(f"合成偏移(正=延后,负=提前): {net_shift} ms")
+                        if local_chain is not None:
+                            try:
+                                lines.append(f"本地链路延迟: {float(local_chain):.2f} ms")
+                            except Exception:
+                                lines.append(f"本地链路延迟: {local_chain} ms")
+                        if next_fire:
+                            lines.append(f"下一次: {next_fire}")
+                        if remaining is not None:
+                            lines.append(f"倒计时: {_fmt_ms(remaining)}")
+                        controller.timing_status_var.set("\n".join(lines))
+                except Exception:
+                    pass
+                # 循环刷新
+                try:
+                    if hasattr(controller, 'root') and controller.root:
+                        controller.root.after(1000, _refresh_timing_status)
+                except Exception:
+                    pass
+            try:
+                if hasattr(controller, 'root') and controller.root:
+                    controller.root.after(delay_ms or 0, _do)
+                else:
+                    _do()
+            except Exception:
+                _do()
+
+        # 首次进入时刷新一次，并开启定时刷新
+        _refresh_timing_status(delay_ms=10)
+        # 页面初始化时若启用了 NTP，则确保后台对时线程已启动，并应用当前对时参数
+        def _bootstrap_timing():
+            try:
+                if controller.ntp_enabled_var.get():
+                    _apply_servers()
+                    _apply_resync_params()
+            except Exception:
+                pass
+        try:
+            if hasattr(controller, 'root') and controller.root:
+                controller.root.after(50, _bootstrap_timing)
+            else:
+                _bootstrap_timing()
+        except Exception:
+            _bootstrap_timing()
+        # 循环将在 _do 中自行重排 next after
 
         button_frame = ttk.LabelFrame(ctrl_inner, text="操作", padding="10")
         button_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
@@ -859,37 +1048,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         # 保存合奏页签引用，便于外部显隐
         controller._tab_ensemble = tab_ensemble
 
-        # 在“合奏”页签中添加三块功能：计划 / 对时 / 统一开始
-        # 1) 计划开始
-        plan_frame = ttk.LabelFrame(tab_ensemble, text="计划开始", padding="8")
-        plan_frame.pack(fill=tk.X, padx=8, pady=(8, 6))
-        ttk.Label(plan_frame, text="延时(秒):").grid(row=0, column=0, sticky=tk.W)
-        controller.ensemble_delay_var = tk.DoubleVar(value=0.0)
-        ttk.Spinbox(plan_frame, from_=0.0, to=600.0, increment=0.5, textvariable=controller.ensemble_delay_var, width=8).grid(row=0, column=1, sticky=tk.W, padx=(6, 12))
-        ttk.Button(plan_frame, text="计划开始", command=lambda: getattr(controller, '_ensemble_plan_start', lambda: None)()).grid(row=0, column=2, sticky=tk.W)
-        for i in range(3):
-            plan_frame.columnconfigure(i, weight=1)
-
-        # 2) 对时
-        sync_frame = ttk.LabelFrame(tab_ensemble, text="对时", padding="8")
-        sync_frame.pack(fill=tk.X, padx=8, pady=(0, 6))
-        ttk.Button(sync_frame, text="启用公网对时", command=lambda: getattr(controller, '_enable_network_clock', lambda: None)()).grid(row=0, column=0, sticky=tk.W)
-        ttk.Button(sync_frame, text="手动对时", command=lambda: getattr(controller, '_sync_network_clock', lambda: None)()).grid(row=0, column=1, sticky=tk.W, padx=(12, 0))
-        ttk.Button(sync_frame, text="切回本地时钟", command=lambda: getattr(controller, '_use_local_clock', lambda: None)()).grid(row=0, column=2, sticky=tk.W, padx=(12, 0))
-        for i in range(3):
-            sync_frame.columnconfigure(i, weight=1)
-
-        # 3) 统一开始
-        start_frame = ttk.LabelFrame(tab_ensemble, text="统一开始", padding="8")
-        start_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
-        ttk.Label(start_frame, text="倒计时(秒):").grid(row=0, column=0, sticky=tk.W)
-        controller.ensemble_countdown_var = tk.IntVar(value=3)
-        ttk.Spinbox(start_frame, from_=0, to=30, textvariable=controller.ensemble_countdown_var, width=6).grid(row=0, column=1, sticky=tk.W, padx=(6, 12))
-        controller.ensemble_use_analyzed_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(start_frame, text="使用右侧解析事件", variable=controller.ensemble_use_analyzed_var).grid(row=0, column=2, sticky=tk.W)
-        ttk.Button(start_frame, text="统一开始", command=lambda: getattr(controller, '_ensemble_unified_start', lambda: None)()).grid(row=0, column=3, sticky=tk.W, padx=(12,0))
-        for i in range(4):
-            start_frame.columnconfigure(i, weight=1)
+        # 旧的“计划/对时/统一开始”UI已移除，统一在“控制”分页的“定时触发”中提供。
 
     # 不返回未定义的 notebook，避免 NameError
     return None

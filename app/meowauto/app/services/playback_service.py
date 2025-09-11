@@ -40,6 +40,8 @@ class PlaybackService:
         self._parts_filter_ch_prog: dict[int, int] | None = None  # {channel: program}
         self._parts_filter_tracks: set[int] | None = None  # {track index}
         self._parts_selected_has_nondrum: bool = False
+        # TimingService 注入点（可选）
+        self._timing_service = None
 
     def init_players(self) -> None:
         """延迟初始化播放器（占位）。"""
@@ -378,6 +380,20 @@ class PlaybackService:
         except Exception:
             pass
 
+    # ===== TimingService 注入/获取 =====
+    def set_timing_service(self, timing_service: Any) -> None:
+        self._timing_service = timing_service
+        # 若时钟可用，尝试把其 clock_provider 也同步给 AutoPlayer
+        try:
+            cp = getattr(timing_service, 'clock', None)
+            if cp is not None:
+                self.set_clock_provider(cp)
+        except Exception:
+            pass
+
+    def get_timing_service(self) -> Any:
+        return self._timing_service
+
     # ===== 下发 AutoPlayer 选项（供 app.py 调用） =====
     def configure_auto_player(self, *, debug: Optional[bool] = None, options: Optional[Dict[str, Any]] = None) -> None:
         """配置 AutoPlayer 的调试开关与各类可选参数（和弦/黑键移调/回退等）。"""
@@ -615,6 +631,60 @@ class PlaybackService:
                 self.auto_player.stop_auto_play()
         except Exception:
             pass
+
+    # ===== 新增：按乐器播放（供定时触发调用） =====
+    def play_for_instrument(self, instrument: str, *, tempo: float = 1.0,
+                             use_analyzed: Optional[bool] = True,
+                             controller_ref: Optional[Any] = None) -> bool:
+        """基于当前控制器上下文，按指定乐器触发播放。
+        - 优先使用控制器缓存的解析事件（analysis_notes + analysis_file），保持统一管线
+        - 若无解析缓存，则走从路径启动（依旧会在内部进行 pretty_midi 解析并应用预处理）
+        - 乐器影响“分部选择/角色过滤”由外部在 controller 层已设置，服务层按默认行为处理
+        """
+        try:
+            self.init_players()
+            ap = self.auto_player
+            if not ap:
+                return False
+            # 向 AutoPlayer 注入时钟（若未注入）
+            try:
+                if self.clock_provider and hasattr(ap, 'set_clock_provider'):
+                    ap.set_clock_provider(self.clock_provider)
+            except Exception:
+                pass
+
+            midi_path = ''
+            analyzed_notes = None
+            use_an = bool(use_analyzed)
+            # 从 controller_ref 读取上下文
+            if controller_ref is not None:
+                try:
+                    midi_path = (getattr(controller_ref, 'midi_path_var', None).get() or '') if hasattr(controller_ref, 'midi_path_var') else ''
+                except Exception:
+                    midi_path = ''
+                try:
+                    analyzed_notes = getattr(controller_ref, 'analysis_notes', None)
+                    analysis_file = getattr(controller_ref, 'analysis_file', None)
+                    if analysis_file and midi_path and (analysis_file != midi_path):
+                        # 文件已变更则不使用旧缓存
+                        analyzed_notes = None
+                except Exception:
+                    analyzed_notes = None
+
+            # 绑定回调（进度）
+            try:
+                self.set_auto_callbacks(on_progress=getattr(controller_ref, '_on_play_progress', None))
+            except Exception:
+                pass
+
+            if use_an and analyzed_notes:
+                return bool(self.start_auto_play_from_path(midi_path or '', tempo=tempo, use_analyzed=True, analyzed_notes=analyzed_notes))
+            # 回退到从路径启动
+            if not midi_path:
+                return False
+            return bool(self.start_auto_play_from_path(midi_path, tempo=tempo, use_analyzed=False))
+        except Exception:
+            return False
 
     # 仅停止/暂停/恢复自动演奏（不影响 MIDI 播放）
     def stop_auto_only(self, auto_player: Optional[Any] = None) -> None:

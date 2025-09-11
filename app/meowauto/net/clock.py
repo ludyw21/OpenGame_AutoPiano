@@ -77,6 +77,39 @@ class NetworkClockProvider:
         except Exception:
             pass
 
+    def measure_latency(self, samples: int = 5, timeout: Optional[float] = None) -> dict:
+        """多次采样以估计网络往返时延（RTT）与当前 offset。
+
+        返回示例：
+        {
+          'ok': True,
+          'rtt_ms': 8.4,              # 采用样本中的最小 RTT 作为估计
+          'offset_ms': 123.1,         # 当前 offset（monotonic->unix）的毫秒估计
+          'samples': [ {'server': 'ntp.ntsc.ac.cn', 'rtt_ms': 9.2}, ... ],
+          'server': 'ntp.ntsc.ac.cn'  # 最小 RTT 样本对应的服务器
+        }
+        """
+        results: List[dict] = []
+        best: Optional[dict] = None
+        to = float(timeout) if (timeout is not None) else self.timeout
+        for i in range(max(1, int(samples))):
+            for host in list(self.servers):
+                t0 = time.perf_counter()
+                t_ntp = self._query_ntp(host)
+                t1 = time.perf_counter()
+                if t_ntp is None:
+                    continue
+                rtt_ms = max(0.0, (t1 - t0) * 1000.0)
+                # 使用系统时钟与 NTP 时间的差值，避免把 monotonic 偏移当作可读 offset
+                sys_delta_ms = (t_ntp - time.time()) * 1000.0
+                rec = {'server': host, 'rtt_ms': rtt_ms, 'sys_delta_ms': sys_delta_ms}
+                results.append(rec)
+                if (best is None) or (rtt_ms < best['rtt_ms']):
+                    best = rec
+        if not best:
+            return {'ok': False, 'rtt_ms': None, 'sys_delta_ms': None, 'samples': results}
+        return {'ok': True, 'rtt_ms': float(best['rtt_ms']), 'sys_delta_ms': float(best['sys_delta_ms']), 'samples': results, 'server': best['server']}
+
     def _query_ntp(self, host: str) -> Optional[float]:
         """查询单个 NTP 服务器，返回 Unix 时间戳（秒）。失败返回 None。"""
         try:
@@ -133,6 +166,76 @@ class NetworkClockProvider:
 
     def cancel(self, handle: object) -> None:
         return None
+
+    def schedule_at(self, unix_ts: float, cb: Callable[[], None], *, tk_root: Optional[object] = None, tolerance_ms: int = 2):
+        """在给定“网络时间轴”的绝对 Unix 秒时间戳调度回调。
+
+        - 当 last_sync_ok=True 时：目标单调时刻 = unix_ts - self._offset
+        - 否则退回本地系统时钟：目标单调时刻 = 当前 monotonic + (unix_ts - time.time())
+        - 分级等待：长睡眠 -> 短睡眠 -> 忙等（<= tolerance_ms）
+        - 若提供 tk_root（Tk对象），将使用 after 进行细粒度调度，句柄可被 cancel
+        """
+        import threading
+
+        tol = max(0.0, float(tolerance_ms) / 1000.0)
+        now_mono = time.monotonic()
+        if self._last_sync_ok:
+            target_mono = float(unix_ts) - float(self._offset)
+        else:
+            # 回退：按本地系统时间估算
+            delta = float(unix_ts) - time.time()
+            target_mono = now_mono + max(0.0, delta)
+
+        # 线程定时 + 可选 Tk.after 兜底校准
+        cancelled = {'flag': False}
+        after_id = {'v': None}
+
+        def runner():
+            if cancelled['flag']:
+                return
+            while True:
+                now = time.monotonic()
+                remain = target_mono - now
+                if remain <= 0:
+                    break
+                if remain > 0.1:
+                    time.sleep(min(0.5, remain - 0.05))
+                elif remain > 0.01:
+                    time.sleep(remain - 0.005)
+                elif remain > tol:
+                    time.sleep(0.001)
+                else:
+                    # 忙等阶段
+                    while (time.monotonic() < target_mono) and not cancelled['flag']:
+                        pass
+                    break
+            if cancelled['flag']:
+                return
+            # 最终触发，若 tk_root 可用则切回主线程
+            if tk_root is not None and hasattr(tk_root, 'after'):
+                try:
+                    after_id['v'] = tk_root.after(0, cb)
+                    return
+                except Exception:
+                    pass
+            try:
+                cb()
+            except Exception:
+                pass
+
+        th = threading.Thread(target=runner, daemon=True)
+        th.start()
+
+        class _Handle:
+            def cancel(self_inner):
+                cancelled['flag'] = True
+                try:
+                    if tk_root is not None and after_id['v'] is not None:
+                        tk_root.after_cancel(after_id['v'])
+                except Exception:
+                    pass
+
+        return _Handle()
 
 
 # 兼容导出别名

@@ -28,6 +28,8 @@ class AutoPlayer:
         self.current_tempo = 1.0
         self.current_events = []
         self.debug = False  # 调试模式：输出详细调度与事件日志
+        # 可选时钟提供者（由服务层注入，仅用于日志与未来扩展）
+        self._clock_provider = None
         # 可配置选项
         self.options = {
             'allow_retrigger': True,           # 允许同一键在按下状态下进行重触发（快速抬起再按下）
@@ -73,6 +75,16 @@ class AutoPlayer:
         """启用/关闭调试模式"""
         self.debug = bool(enabled)
         self.logger.log(f"AutoPlayer 调试模式: {'开启' if self.debug else '关闭'}", "INFO")
+
+    def set_clock_provider(self, provider):
+        """注入时钟提供者（可为网络时钟/本地时钟）。当前播放循环仍使用本地高精度计时，
+        此方法主要用于统一接口与日志展示。"""
+        self._clock_provider = provider
+        try:
+            src = 'NTP' if getattr(provider, 'last_sync_ok', False) else 'Local'
+            self.logger.log(f"[AutoPlayer] 时钟已注入: src={src}", "DEBUG")
+        except Exception:
+            pass
     
     def set_options(self, **kwargs):
         """设置可选参数: allow_retrigger, retrigger_min_gap_ms, epsilon_ms"""
@@ -322,10 +334,15 @@ class AutoPlayer:
         self.play_thread = threading.Thread(target=self._auto_play_mapped_events_thread, args=(events,))
         self.play_thread.start()
         
-        # 启动回调
-        if 'on_start' in self.playback_callbacks:
-            self.playback_callbacks['on_start']()
-        self.logger.log("开始自动演奏（外部解析事件）", "INFO")
+        # 启动回调（需可调用）
+        cb = self.playback_callbacks.get('on_start')
+        if callable(cb):
+            cb()
+        try:
+            src = 'NTP' if getattr(self._clock_provider, 'last_sync_ok', False) else 'Local'
+            self.logger.log(f"开始自动演奏（外部解析事件） clock={src}", "INFO")
+        except Exception:
+            self.logger.log("开始自动演奏（外部解析事件）", "INFO")
         if self.debug:
             self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}, pretty_midi模式", "DEBUG")
         return True
@@ -429,9 +446,14 @@ class AutoPlayer:
         self.play_thread.start()
 
         # 启动回调与日志
-        if self.playback_callbacks['on_start']:
-            self.playback_callbacks['on_start']()
-        self.logger.log("开始自动演奏（外部解析事件-角色混合映射）", "INFO")
+        cb = self.playback_callbacks.get('on_start')
+        if callable(cb):
+            cb()
+        try:
+            src = 'NTP' if getattr(self._clock_provider, 'last_sync_ok', False) else 'Local'
+            self.logger.log(f"开始自动演奏（外部解析事件-角色混合映射） clock={src}", "INFO")
+        except Exception:
+            self.logger.log("开始自动演奏（外部解析事件-角色混合映射）", "INFO")
         if self.debug:
             self.logger.log(f"[DEBUG] 外部事件数: {len(events)}, 速度: {self.current_tempo}, pretty_midi模式(mixed)", "DEBUG")
         return True

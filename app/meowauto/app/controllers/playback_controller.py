@@ -12,7 +12,12 @@ PlaybackController（占位）：协调 UI 与 PlaybackService
 """
 from __future__ import annotations
 from typing import Optional, Any, List, Dict
+import time
 import os
+try:
+    from tkinter import messagebox as mb
+except Exception:
+    mb = None
 
 try:
     import mido
@@ -26,6 +31,8 @@ class PlaybackController:
     def __init__(self, app: Any, playback_service: Any | None = None) -> None:
         self.app = app
         self.playback_service = playback_service
+        # 定时与对时：状态
+        self._last_schedule_id: str | None = None
 
     # —— UI 交互封装（占位） ——
     def toggle_auto_play(self) -> None:
@@ -112,6 +119,242 @@ class PlaybackController:
 
         # 没有正在播放的内容
         app._log_message("没有正在播放的内容", "WARNING")
+
+    # —— 新：TimingService 桥接 ——
+    def _ensure_timing_service(self):
+        try:
+            ps = self.playback_service
+            if not ps:
+                return None
+            ts = getattr(ps, 'get_timing_service', None)
+            cur = ts() if callable(ts) else None
+            if cur:
+                return cur
+            # 创建并注入
+            try:
+                from meowauto.app.services.timing_service import TimingService
+            except Exception:
+                return None
+            t = TimingService(getattr(ps, 'logger', None), tk_root=getattr(self.app, 'root', None))
+            if hasattr(ps, 'set_timing_service'):
+                ps.set_timing_service(t)
+            # 同步时钟到 AutoPlayer
+            try:
+                cp = getattr(t, 'clock', None)
+                if cp is not None and hasattr(ps, 'set_clock_provider'):
+                    ps.set_clock_provider(cp)
+            except Exception:
+                pass
+            return t
+        except Exception:
+            return None
+
+    def _timing_enable_network_clock(self):
+        ts = self._ensure_timing_service()
+        if not ts:
+            return
+        # 使用UI传入的服务器（可选），否则默认
+        servers = None
+        try:
+            sv = getattr(self.app, 'timing_servers_var', None)
+            if sv is not None:
+                raw = sv.get().strip()
+                if raw:
+                    servers = [s.strip() for s in raw.split(',') if s.strip()]
+        except Exception:
+            servers = None
+        ok = bool(ts.configure_ntp(servers=servers))
+        st = ts.get_status()
+        off = st.get('offset_ms'); rtt = st.get('rtt_ms')
+        try:
+            self.app._log_message(f"公网对时{'成功' if ok else '失败'} offset={off}ms rtt={rtt}ms")
+            self.app.ui_manager.set_status(f"公网对时{'成功' if ok else '失败'} offset={off}ms rtt={rtt}ms")
+        except Exception:
+            pass
+
+    def _timing_sync_now(self):
+        ts = self._ensure_timing_service()
+        if not ts:
+            return
+        st = ts.sync_now()
+        try:
+            self.app._log_message(f"手动对时{'成功' if st.get('ok') else '失败'} provider={st.get('provider')} offset={st.get('offset_ms')}ms rtt={st.get('rtt_ms')}ms")
+            self.app.ui_manager.set_status(f"手动对时{'成功' if st.get('ok') else '失败'}")
+        except Exception:
+            pass
+
+    def _timing_use_local(self):
+        ts = self._ensure_timing_service()
+        if not ts:
+            return
+        ts.use_local()
+        try:
+            self.app._log_message("已切回本地时钟")
+            self.app.ui_manager.set_status("已切回本地时钟")
+        except Exception:
+            pass
+
+    def _timing_apply_servers(self):
+        """从UI读取服务器列表并应用（启用NTP）。"""
+        ts = self._ensure_timing_service()
+        if not ts:
+            return
+        servers = []
+        try:
+            raw = getattr(self.app, 'timing_servers_var', None)
+            if raw is not None:
+                s = raw.get().strip()
+            else:
+                s = getattr(self, 'timing_servers_var', None).get().strip() if hasattr(self, 'timing_servers_var') else ''
+            if s:
+                servers = [x.strip() for x in s.split(',') if x.strip()]
+        except Exception:
+            servers = []
+        ok = False
+        if servers:
+            ok = bool(ts.set_ntp_servers(servers))
+        else:
+            ok = bool(ts.configure_ntp())
+        try:
+            self.app._log_message(f"应用NTP服务器{'成功' if ok else '失败'}: {servers if servers else '[默认]'}")
+        except Exception:
+            pass
+
+    def _timing_toggle_ntp(self, enable: bool):
+        ts = self._ensure_timing_service()
+        if not ts:
+            return
+        if enable:
+            # 尝试使用当前输入服务器启用
+            self._timing_apply_servers()
+        else:
+            self._timing_use_local()
+
+    def _timing_schedule_for_current_instrument(self):
+        ts = self._ensure_timing_service()
+        if not ts:
+            return
+        # 读取 UI 变量（由 playback_controls 注入）
+        try:
+            hh = int(getattr(self.app, 'timing_hh_var').get()) if hasattr(self.app, 'timing_hh_var') else int(getattr(self, 'timing_hh_var').get())
+            mm = int(getattr(self.app, 'timing_mm_var').get()) if hasattr(self.app, 'timing_mm_var') else int(getattr(self, 'timing_mm_var').get())
+            ss = int(getattr(self.app, 'timing_ss_var').get()) if hasattr(self.app, 'timing_ss_var') else int(getattr(self, 'timing_ss_var').get())
+            ms = int(getattr(self.app, 'timing_ms_var').get()) if hasattr(self.app, 'timing_ms_var') else int(getattr(self, 'timing_ms_var').get())
+        except Exception:
+            return
+        try:
+            manual = int(getattr(self.app, 'timing_manual_ms_var').get()) if hasattr(self.app, 'timing_manual_ms_var') else int(getattr(self, 'timing_manual_ms_var').get())
+        except Exception:
+            manual = 0
+        try:
+            ts.set_manual_compensation(manual)
+        except Exception:
+            pass
+
+        inst = getattr(self.app, 'current_instrument', None) or getattr(self, 'current_instrument', None) or '电子琴'
+        tempo = 1.0
+        try:
+            tempo = float(getattr(self.app, 'tempo_var').get()) if hasattr(self.app, 'tempo_var') else float(getattr(self, 'tempo_var').get())
+        except Exception:
+            tempo = 1.0
+
+        def play_func(instrument: str) -> bool:
+            ps = self.playback_service
+            if not ps:
+                return False
+            return bool(ps.play_for_instrument(instrument, tempo=tempo, use_analyzed=True, controller_ref=self.app))
+
+        sid = ts.schedule_play(inst, (hh, mm, ss, ms), play_func=play_func, tempo=tempo, use_analyzed=True)
+        st = ts.get_status()
+        if not sid:
+            # 失败：多半为目标时间已过
+            try:
+                self.app._log_message(f"创建计划失败：目标时间已过或参数非法 {hh:02d}:{mm:02d}:{ss:02d}.{ms:03d}", "ERROR")
+                if hasattr(self.app, 'timing_status_var'):
+                    self.app.timing_status_var.set("创建计划失败：检查目标时间")
+                # 弹窗提示
+                if mb:
+                    mb.showerror("创建计划失败", f"目标时间已过或参数非法:\n{hh:02d}:{mm:02d}:{ss:02d}.{ms:03d}")
+            except Exception:
+                pass
+            return
+        self._last_schedule_id = sid
+        try:
+            self.app._log_message(f"已创建单次计划 id={sid} {hh:02d}:{mm:02d}:{ss:02d}.{ms:03d} provider={st.get('provider')} offset={st.get('offset_ms')}ms rtt={st.get('rtt_ms')}ms manual={st.get('manual_compensation_ms')}ms")
+        except Exception:
+            pass
+
+    def _timing_cancel_schedule(self):
+        ts = self._ensure_timing_service()
+        if not ts or not self._last_schedule_id:
+            return
+        ok = bool(ts.cancel_schedule(self._last_schedule_id))
+        try:
+            self.app._log_message(f"取消计划 {'成功' if ok else '失败'} id={self._last_schedule_id}")
+        except Exception:
+            pass
+        self._last_schedule_id = None
+
+    def _timing_test_now(self):
+        # 立即按当前设置触发一次
+        inst = getattr(self.app, 'current_instrument', None) or '电子琴'
+        tempo = 1.0
+        try:
+            tempo = float(getattr(self.app, 'tempo_var').get()) if hasattr(self.app, 'tempo_var') else 1.0
+        except Exception:
+            tempo = 1.0
+        ps = self.playback_service
+        if not ps:
+            return
+        ps.play_for_instrument(inst, tempo=tempo, use_analyzed=True, controller_ref=self.app)
+
+    def _timing_get_ui_status(self) -> dict:
+        """提供给UI查询当前对时/延迟链路状态与最近计划触发时间。"""
+        ts = self._ensure_timing_service()
+        if not ts:
+            return {}
+        st = ts.get_status() or {}
+        # 最近计划
+        sched = None
+        if self._last_schedule_id:
+            try:
+                sched = ts.get_schedule(self._last_schedule_id)
+            except Exception:
+                sched = None
+        # 组装字符串
+        next_str = ""
+        remaining_ms = None
+        if sched and sched.get('schedule_unix'):
+            try:
+                su = float(sched['schedule_unix'])
+                lt = time.localtime(su)
+                next_str = time.strftime("%Y-%m-%d %H:%M:%S", lt) + f".{int((su - int(su))*1000):03d}"
+                # 倒计时
+                now_s = time.time()
+                remaining_ms = max(0.0, (su - now_s) * 1000.0)
+            except Exception:
+                next_str = ""
+        return {
+            'provider': st.get('provider'),
+            'sys_delta_ms': st.get('sys_delta_ms'),
+            'rtt_ms': st.get('rtt_ms'),
+            'manual_compensation_ms': st.get('manual_compensation_ms'),
+            'auto_latency_ms': st.get('auto_latency_ms'),
+            'net_shift_ms': st.get('net_shift_ms'),
+            'local_chain_ms': st.get('local_chain_ms'),
+            'next_fire': next_str,
+            'remaining_ms': remaining_ms,
+        }
+
+    def _timing_set_resync_settings(self, interval_sec: float | int | None = None, adjust_threshold_ms: float | int | None = None):
+        ts = self._ensure_timing_service()
+        if not ts:
+            return
+        try:
+            if hasattr(ts, 'set_resync_settings'):
+                ts.set_resync_settings(interval_sec=interval_sec, adjust_threshold_ms=adjust_threshold_ms)
+        except Exception:
+            pass
 
     # —— 时钟控制封装 ——
     def enable_network_clock(self, servers: list[str] | None = None, timeout: float | None = None, max_tries: int | None = None) -> bool:
