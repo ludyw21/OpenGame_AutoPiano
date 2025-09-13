@@ -75,65 +75,6 @@ class AudioConverter:
         thread = threading.Thread(target=convert_thread, daemon=True)
         thread.start()
     
-    def batch_convert(self, folder_path: str, output_dir: str = None) -> Dict[str, Any]:
-        """批量转换音频文件"""
-        if not os.path.exists(folder_path):
-            self.logger.error(f"文件夹不存在: {folder_path}")
-            return {"success": False, "error": "文件夹不存在"}
-        
-        # 查找音频文件
-        audio_files = []
-        for file in os.listdir(folder_path):
-            if any(file.lower().endswith(ext) for ext in self.supported_formats):
-                audio_files.append(file)
-        
-        if not audio_files:
-            self.logger.warning("所选文件夹中没有支持的音频文件")
-            return {"success": False, "error": "没有支持的音频文件"}
-        
-        # 创建输出目录
-        if output_dir is None:
-            output_dir = os.path.join(folder_path, "converted_midi")
-        
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        self.logger.log(f"开始批量转换 {len(audio_files)} 个音频文件...", "INFO")
-        
-        # 执行批量转换
-        success_count = 0
-        failed_files = []
-        
-        for i, audio_file in enumerate(audio_files):
-            audio_path = os.path.join(folder_path, audio_file)
-            output_name = os.path.splitext(audio_file)[0] + ".mid"
-            midi_output = os.path.join(output_dir, output_name)
-            
-            self.logger.log(f"正在转换 {audio_file} ({i+1}/{len(audio_files)})", "INFO")
-            
-            try:
-                success = self.convert_audio_to_midi(audio_path, midi_output)
-                if success:
-                    success_count += 1
-                    self.logger.log(f"转换成功: {audio_file}", "SUCCESS")
-                else:
-                    failed_files.append(audio_file)
-                    self.logger.log(f"转换失败: {audio_file}", "ERROR")
-            except Exception as e:
-                failed_files.append(audio_file)
-                self.logger.log(f"转换错误 {audio_file}: {str(e)}", "ERROR")
-        
-        result = {
-            "success": True,
-            "total": len(audio_files),
-            "success_count": success_count,
-            "failed_count": len(failed_files),
-            "failed_files": failed_files,
-            "output_dir": output_dir
-        }
-        
-        self.logger.log(f"批量转换完成: {success_count}/{len(audio_files)} 成功", "SUCCESS")
-        return result
     
     def get_supported_formats(self) -> List[str]:
         """获取支持的音频格式"""
