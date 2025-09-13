@@ -24,9 +24,15 @@ class DrumsPage(BasePage):
         self.app_ref = app_ref
         self._mounted = False
         
+        # 设置当前乐器，以便播放控制器能够识别
+        if self.app_ref:
+            self.app_ref.current_instrument = "架子鼓"
+            # 为播放服务添加必要的属性
+            self.app_ref.analysis_notes = None
+            self.app_ref.analysis_file = ""
+        
         # 状态变量
-        self.midi_path_var = tk.StringVar(value="")
-        self.tempo_var = tk.DoubleVar(value=1.0)
+        # midi_path_var将在_create_file_section中定义在app_ref上
         self.current_midi_file = ""
         self.analysis_notes = None
         self.analysis_file = ""
@@ -50,6 +56,9 @@ class DrumsPage(BasePage):
         self.playlist_mode_var = tk.StringVar(value='顺序')  # 顺序/循环/单曲
         self._current_playing_iid: Optional[str] = None
 
+        # 定时和对时相关
+        self._current_schedule_id: Optional[str] = None
+
     def mount(self, left: ttk.Frame, right: ttk.Frame):
         """挂载架子鼓页面"""
         self._create_left_panel(left)
@@ -62,8 +71,39 @@ class DrumsPage(BasePage):
 
     def _create_left_panel(self, parent):
         """创建左侧面板"""
-        # 主容器
-        main_frame = ttk.Frame(parent)
+        # 创建滚动容器
+        canvas = tk.Canvas(parent, highlightthickness=0, bg='white')
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        # 配置滚动
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # 布局滚动容器
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 绑定鼠标滚轮事件
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _bind_to_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        def _unbind_from_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+        
+        canvas.bind('<Enter>', _bind_to_mousewheel)
+        canvas.bind('<Leave>', _unbind_from_mousewheel)
+        
+        # 主容器（在滚动框架内）
+        main_frame = ttk.Frame(scrollable_frame)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # 文件选择区域
@@ -74,6 +114,9 @@ class DrumsPage(BasePage):
         
         # 播放控制区域
         self._create_control_section(main_frame)
+        
+        # 定时和对时功能区域
+        self._create_timing_section(main_frame)
         
         # 播放列表区域
         self._create_playlist_section(main_frame)
@@ -87,8 +130,15 @@ class DrumsPage(BasePage):
         path_frame = ttk.Frame(file_frame)
         path_frame.pack(fill=tk.X)
         
+        # 将midi_path_var定义在app_ref上，以便播放服务能够访问
+        if self.app_ref:
+            self.app_ref.midi_path_var = tk.StringVar(value="")
+        else:
+            self.midi_path_var = tk.StringVar(value="")
+        
+        midi_path_var = self.app_ref.midi_path_var if self.app_ref else self.midi_path_var
         ttk.Label(path_frame, text="文件:").pack(side=tk.LEFT)
-        path_entry = ttk.Entry(path_frame, textvariable=self.midi_path_var, width=40)
+        path_entry = ttk.Entry(path_frame, textvariable=midi_path_var, width=40)
         path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
         
         browse_btn = ttk.Button(path_frame, text="浏览", command=self._browse_file,
@@ -99,9 +149,16 @@ class DrumsPage(BasePage):
         tempo_frame = ttk.Frame(file_frame)
         tempo_frame.pack(fill=tk.X, pady=(5, 0))
         
+        # 将tempo_var定义在app_ref上，以便播放控制器能够访问
+        if self.app_ref:
+            self.app_ref.tempo_var = tk.DoubleVar(value=1.0)
+        else:
+            self.tempo_var = tk.DoubleVar(value=1.0)
+        
+        tempo_var = self.app_ref.tempo_var if self.app_ref else self.tempo_var
         ttk.Label(tempo_frame, text="速度倍率:").pack(side=tk.LEFT)
         tempo_spin = ttk.Spinbox(tempo_frame, from_=0.1, to=3.0, increment=0.1,
-                                textvariable=self.tempo_var, width=10)
+                                textvariable=tempo_var, width=10)
         tempo_spin.pack(side=tk.LEFT, padx=(5, 0))
 
     def _create_partition_section(self, parent):
@@ -175,6 +232,144 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
         
         ttk.Label(keymap_frame, text=keymap_text, font=("Consolas", 8), 
                  foreground="#666666").pack(anchor=tk.W, padx=(10, 0))
+
+    def _create_timing_section(self, parent):
+        """创建定时和对时功能区域"""
+        timing_frame = ttk.LabelFrame(parent, text="定时触发（单次·NTP对时+延迟/补偿）", padding="10")
+        timing_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # 时间输入：HH:MM:SS.mmm
+        ttk.Label(timing_frame, text="目标时间(24h):").grid(row=0, column=0, sticky=tk.W)
+        # 将时间变量定义在app_ref上，以便播放控制器能够访问
+        if self.app_ref:
+            self.app_ref.timing_hh_var = tk.IntVar(value=17)
+            self.app_ref.timing_mm_var = tk.IntVar(value=0)
+            self.app_ref.timing_ss_var = tk.IntVar(value=0)
+            self.app_ref.timing_ms_var = tk.IntVar(value=0)
+        else:
+            # 备用方案：如果app_ref不可用，仍然定义在self上
+            self.timing_hh_var = tk.IntVar(value=17)
+            self.timing_mm_var = tk.IntVar(value=0)
+            self.timing_ss_var = tk.IntVar(value=0)
+            self.timing_ms_var = tk.IntVar(value=0)
+        # 使用正确的变量引用
+        hh_var = self.app_ref.timing_hh_var if self.app_ref else self.timing_hh_var
+        mm_var = self.app_ref.timing_mm_var if self.app_ref else self.timing_mm_var
+        ss_var = self.app_ref.timing_ss_var if self.app_ref else self.timing_ss_var
+        ms_var = self.app_ref.timing_ms_var if self.app_ref else self.timing_ms_var
+        
+        ttk.Spinbox(timing_frame, from_=0, to=23, width=4, textvariable=hh_var).grid(row=0, column=1, sticky=tk.W)
+        ttk.Label(timing_frame, text=":").grid(row=0, column=2, sticky=tk.W)
+        ttk.Spinbox(timing_frame, from_=0, to=59, width=4, textvariable=mm_var).grid(row=0, column=3, sticky=tk.W)
+        ttk.Label(timing_frame, text=":").grid(row=0, column=4, sticky=tk.W)
+        ttk.Spinbox(timing_frame, from_=0, to=59, width=4, textvariable=ss_var).grid(row=0, column=5, sticky=tk.W)
+        ttk.Label(timing_frame, text=".").grid(row=0, column=6, sticky=tk.W)
+        ttk.Spinbox(timing_frame, from_=0, to=999, width=6, textvariable=ms_var).grid(row=0, column=7, sticky=tk.W)
+
+        # 对时控制（执行后刷新状态）
+        def _btn_enable_net():
+            self._timing_enable_network_clock()
+            self._refresh_timing_status(delay_ms=50)
+        def _btn_sync_now():
+            self._timing_sync_now()
+            self._refresh_timing_status(delay_ms=50)
+        def _btn_use_local():
+            self._timing_use_local()
+            self._refresh_timing_status(delay_ms=50)
+        ttk.Button(timing_frame, text="启用公网对时", command=_btn_enable_net).grid(row=1, column=0, sticky=tk.W, pady=(6,0))
+        ttk.Button(timing_frame, text="手动对时", command=_btn_sync_now).grid(row=1, column=1, sticky=tk.W, padx=(6,0), pady=(6,0))
+        ttk.Button(timing_frame, text="切回本地时钟", command=_btn_use_local).grid(row=1, column=2, sticky=tk.W, padx=(6,0), pady=(6,0))
+
+        # NTP 服务器选择/关闭
+        ttk.Label(timing_frame, text="NTP服务器(逗号分隔):").grid(row=4, column=0, sticky=tk.W, pady=(6,0))
+        try:
+            default_servers = "ntp.ntsc.ac.cn,time1.cloud.tencent.com,time2.cloud.tencent.com"
+            self.timing_servers_var = tk.StringVar(value=default_servers)
+        except Exception:
+            pass
+        server_entry = ttk.Entry(timing_frame, textvariable=self.timing_servers_var, width=48)
+        server_entry.grid(row=4, column=1, columnspan=4, sticky=tk.W+tk.E, padx=(6,0), pady=(6,0))
+        def _apply_servers():
+            self._timing_apply_servers()
+            self._refresh_timing_status(delay_ms=100)
+        ttk.Button(timing_frame, text="应用服务器", command=_apply_servers).grid(row=4, column=5, sticky=tk.W, padx=(6,0), pady=(6,0))
+        self.ntp_enabled_var = tk.BooleanVar(value=True)
+        def _toggle_ntp():
+            self._timing_toggle_ntp(self.ntp_enabled_var.get())
+            self._refresh_timing_status(delay_ms=100)
+        ttk.Checkbutton(timing_frame, text="启用NTP", variable=self.ntp_enabled_var, command=_toggle_ntp).grid(row=4, column=6, sticky=tk.W, padx=(12,0), pady=(6,0))
+
+        # 对时参数：间隔与重排阈值
+        ttk.Label(timing_frame, text="对时间隔(s):").grid(row=5, column=0, sticky=tk.W, pady=(6,0))
+        self.timing_resync_interval_var = tk.DoubleVar(value=1.0)
+        ttk.Spinbox(timing_frame, from_=0.2, to=10.0, increment=0.2, width=8, textvariable=self.timing_resync_interval_var).grid(row=5, column=1, sticky=tk.W, padx=(6,0), pady=(6,0))
+        ttk.Label(timing_frame, text="重排阈值(ms):").grid(row=5, column=2, sticky=tk.W, pady=(6,0))
+        self.timing_adjust_threshold_var = tk.DoubleVar(value=5.0)
+        ttk.Spinbox(timing_frame, from_=1.0, to=1000.0, increment=1.0, width=10, textvariable=self.timing_adjust_threshold_var).grid(row=5, column=3, sticky=tk.W, pady=(6,0))
+        def _apply_resync_params():
+            try:
+                interval = float(self.timing_resync_interval_var.get())
+            except Exception:
+                interval = None
+            try:
+                thr = float(self.timing_adjust_threshold_var.get())
+            except Exception:
+                thr = None
+            self._timing_set_resync_settings(interval, thr)
+            self._refresh_timing_status(delay_ms=100)
+        ttk.Button(timing_frame, text="应用对时参数", command=_apply_resync_params).grid(row=5, column=4, sticky=tk.W, padx=(6,0), pady=(6,0))
+
+        # 手动补偿与状态
+        ttk.Label(timing_frame, text="手动补偿(ms):").grid(row=2, column=0, sticky=tk.W, pady=(6,0))
+        # 将手动补偿变量也定义在app_ref上
+        if self.app_ref:
+            self.app_ref.timing_manual_ms_var = tk.IntVar(value=0)
+        else:
+            self.timing_manual_ms_var = tk.IntVar(value=0)
+        
+        manual_var = self.app_ref.timing_manual_ms_var if self.app_ref else self.timing_manual_ms_var
+        ttk.Spinbox(timing_frame, from_=-2000, to=2000, increment=1, width=8, textvariable=manual_var).grid(row=2, column=1, sticky=tk.W, padx=(6,0), pady=(6,0))
+        self.timing_status_var = tk.StringVar(value="状态: 未对时")
+        ttk.Label(timing_frame, textvariable=self.timing_status_var, foreground="#666").grid(row=2, column=2, columnspan=6, sticky=tk.W, padx=(12,0), pady=(6,0))
+
+        # 操作按钮
+        def _btn_schedule():
+            self._timing_schedule_for_current_instrument()
+            # 计划创建后立即刷新一次，便于看到"实时对时/延迟"
+            self._refresh_timing_status(delay_ms=50)
+        def _btn_cancel():
+            self._timing_cancel_schedule()
+            self._refresh_timing_status(delay_ms=50)
+        def _btn_test_now():
+            self._timing_test_now()
+            self._refresh_timing_status(delay_ms=50)
+        ttk.Button(timing_frame, text="创建计划", command=_btn_schedule).grid(row=3, column=0, sticky=tk.W, pady=(8,0))
+        ttk.Button(timing_frame, text="取消计划", command=_btn_cancel).grid(row=3, column=1, sticky=tk.W, padx=(6,0), pady=(8,0))
+        ttk.Button(timing_frame, text="立即按计划测试一次", command=_btn_test_now).grid(row=3, column=2, sticky=tk.W, padx=(6,0), pady=(8,0))
+        for c in range(8):
+            try:
+                timing_frame.grid_columnconfigure(c, weight=1)
+            except Exception:
+                pass
+
+        # 首次进入时刷新一次，并开启定时刷新
+        self._refresh_timing_status(delay_ms=10)
+        # 页面初始化时若启用了 NTP，则确保后台对时线程已启动，并应用当前对时参数
+        def _bootstrap_timing():
+            try:
+                if self.ntp_enabled_var.get():
+                    _apply_servers()
+                    _apply_resync_params()
+            except Exception:
+                pass
+        try:
+            if hasattr(self, 'app_ref') and self.app_ref and hasattr(self.app_ref, 'root'):
+                self.app_ref.root.after(50, _bootstrap_timing)
+            else:
+                _bootstrap_timing()
+        except Exception:
+            _bootstrap_timing()
+        # 循环将在 _do 中自行重排 next after
 
     def _create_playlist_section(self, parent):
         """创建播放列表区域"""
@@ -283,7 +478,8 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
             filetypes=[('MIDI Files', '*.mid *.midi'), ('All Files', '*.*')]
         )
         if file_path:
-            self.midi_path_var.set(file_path)
+            midi_path_var = self.app_ref.midi_path_var if self.app_ref else self.midi_path_var
+            midi_path_var.set(file_path)
             self.current_midi_file = file_path
             self._log_message(f"已选择文件: {os.path.basename(file_path)}")
             self._add_to_playlist(file_path)
@@ -359,11 +555,16 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
             # 调用架子鼓解析器
             if hasattr(self.app_ref, 'drums_parser'):
                 parser = self.app_ref.drums_parser
-                self.analysis_notes = parser.parse_partitions(
+                analysis_notes = parser.parse_partitions(
                     self.current_midi_file, 
                     self.selected_partitions
                 )
+                # 同时保存到self和app_ref上
+                self.analysis_notes = analysis_notes
                 self.analysis_file = self.current_midi_file
+                if self.app_ref:
+                    self.app_ref.analysis_notes = analysis_notes
+                    self.app_ref.analysis_file = self.current_midi_file
                 
                 self._update_event_table()
                 self._log_message(f"解析完成，共 {len(self.analysis_notes)} 个事件")
@@ -419,7 +620,8 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
                 self._log_message("开始架子鼓播放...")
                 # 调用架子鼓控制器播放
                 if hasattr(self.controller, 'start_from_file'):
-                    tempo = self.tempo_var.get()
+                    tempo_var = self.app_ref.tempo_var if self.app_ref else self.tempo_var
+                    tempo = tempo_var.get()
                     success = self.controller.start_from_file(self.current_midi_file, tempo=tempo)
                     if success:
                         self._log_message("播放已开始")
@@ -520,7 +722,8 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
             if not path:
                 return
             self.current_midi_file = path
-            self.midi_path_var.set(path)
+            midi_path_var = self.app_ref.midi_path_var if self.app_ref else self.midi_path_var
+            midi_path_var.set(path)
             self._current_playing_iid = iid
             self._mark_playlist_status(iid, "播放中")
             self._start_play()
@@ -549,7 +752,8 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
             if not path:
                 return
             self.current_midi_file = path
-            self.midi_path_var.set(path)
+            midi_path_var = self.app_ref.midi_path_var if self.app_ref else self.midi_path_var
+            midi_path_var.set(path)
             self._current_playing_iid = iid
             self._mark_playlist_status(iid, "播放中")
             self._start_play()
@@ -573,7 +777,8 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
             if not path:
                 return
             self.current_midi_file = path
-            self.midi_path_var.set(path)
+            midi_path_var = self.app_ref.midi_path_var if self.app_ref else self.midi_path_var
+            midi_path_var.set(path)
             self._current_playing_iid = iid
             self._mark_playlist_status(iid, "播放中")
             self._start_play()
@@ -689,3 +894,268 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
         lines = self.log_text.get("1.0", tk.END).split('\n')
         if len(lines) > 1000:
             self.log_text.delete("1.0", f"{len(lines)-500}.0")
+
+    # ===== 定时和对时功能实现 =====
+    
+    def _timing_enable_network_clock(self):
+        """启用网络时钟"""
+        try:
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_enable_network_clock()
+            self._log_message("网络时钟已启用", "INFO")
+        except Exception as e:
+            self._log_message(f"启用网络时钟失败: {e}", "ERROR")
+
+    def _timing_sync_now(self):
+        """立即同步时间"""
+        try:
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_sync_now()
+            self._log_message("时间同步请求已发送", "INFO")
+        except Exception as e:
+            self._log_message(f"时间同步异常: {e}", "ERROR")
+
+    def _timing_use_local(self):
+        """切换到本地时钟"""
+        try:
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_use_local()
+            self._log_message("已切换到本地时钟", "INFO")
+        except Exception as e:
+            self._log_message(f"切换本地时钟失败: {e}", "ERROR")
+
+    def _timing_apply_servers(self):
+        """应用NTP服务器设置"""
+        try:
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_apply_servers()
+            self._log_message("NTP服务器设置已应用", "INFO")
+        except Exception as e:
+            self._log_message(f"应用NTP服务器失败: {e}", "ERROR")
+
+    def _timing_toggle_ntp(self, enabled):
+        """切换NTP启用状态"""
+        try:
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_toggle_ntp(enabled)
+            if enabled:
+                self._log_message("NTP后台对时已启用", "INFO")
+            else:
+                self._log_message("NTP已禁用，使用本地时钟", "INFO")
+        except Exception as e:
+            self._log_message(f"切换NTP状态失败: {e}", "ERROR")
+
+    def _timing_set_resync_settings(self, interval, threshold):
+        """设置对时参数"""
+        try:
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_set_resync_settings(interval, threshold)
+            self._log_message(f"对时参数已更新: 间隔={interval}s, 阈值={threshold}ms", "INFO")
+        except Exception as e:
+            self._log_message(f"设置对时参数失败: {e}", "ERROR")
+
+    def _timing_schedule_for_current_instrument(self):
+        """为当前乐器创建定时计划"""
+        try:
+            if not self.current_midi_file:
+                self._log_message("请先选择MIDI文件", "WARNING")
+                return
+            
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_schedule_for_current_instrument()
+            self._log_message("定时计划创建请求已发送", "INFO")
+        except Exception as e:
+            self._log_message(f"创建定时计划失败: {e}", "ERROR")
+
+    def _timing_cancel_schedule(self):
+        """取消定时计划"""
+        try:
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_cancel_schedule()
+            self._log_message("定时计划取消请求已发送", "INFO")
+        except Exception as e:
+            self._log_message(f"取消定时计划失败: {e}", "ERROR")
+
+    def _timing_test_now(self):
+        """立即测试播放（按当前设置）"""
+        try:
+            if not self.current_midi_file:
+                self._log_message("请先选择MIDI文件", "WARNING")
+                return
+            
+            if not self.app_ref:
+                self._log_message("应用引用不可用", "ERROR")
+                return
+            if not hasattr(self.app_ref, 'playback_controller'):
+                self._log_message("播放控制器不可用", "ERROR")
+                return
+            if not self.app_ref.playback_controller:
+                self._log_message("播放控制器未初始化", "ERROR")
+                return
+                
+            # 通过播放控制器调用定时功能
+            self.app_ref.playback_controller._timing_test_now()
+            self._log_message("立即测试播放请求已发送", "INFO")
+        except Exception as e:
+            self._log_message(f"测试播放失败: {e}", "ERROR")
+
+    def _timing_get_ui_status(self):
+        """获取定时服务状态信息"""
+        try:
+            if not self.app_ref:
+                return {}
+            if not hasattr(self.app_ref, 'playback_controller'):
+                return {}
+            if not self.app_ref.playback_controller:
+                return {}
+                
+            # 通过播放控制器获取定时状态
+            return self.app_ref.playback_controller._timing_get_ui_status()
+        except Exception as e:
+            self._log_message(f"获取定时状态失败: {e}", "ERROR")
+        return {}
+
+    def _refresh_timing_status(self, delay_ms: int = 0):
+        """刷新定时状态显示"""
+        def _do():
+            try:
+                st = self._timing_get_ui_status() or {}
+                provider = st.get('provider', 'Local')
+                delta = st.get('sys_delta_ms', 0.0)
+                rtt = st.get('rtt_ms', 0.0)
+                manual = st.get('manual_compensation_ms', 0.0)
+                auto_latency = st.get('auto_latency_ms', None)
+                net_shift = st.get('net_shift_ms', None)
+                local_chain = st.get('local_chain_ms', None)
+                next_fire = st.get('next_fire', '')
+                remaining = st.get('remaining_ms')
+                # 倒计时格式化
+                def _fmt_ms(ms):
+                    try:
+                        ms = int(ms)
+                        s, msec = divmod(ms, 1000)
+                        h, rem = divmod(s, 3600)
+                        m, sec = divmod(rem, 60)
+                        return f"{h:02d}:{m:02d}:{sec:02d}.{msec:03d}"
+                    except Exception:
+                        return "--:--:--.---"
+                lines = []
+                lines.append(f"来源: {provider}")
+                lines.append(f"NTP-本地偏差: {float(delta):.2f} ms")
+                lines.append(f"网络往返延迟: {float(rtt):.2f} ms")
+                if auto_latency is not None:
+                    try:
+                        lines.append(f"自动延迟(估计): {float(auto_latency):.2f} ms")
+                    except Exception:
+                        lines.append(f"自动延迟(估计): {auto_latency} ms")
+                lines.append(f"手动补偿: {float(manual):.2f} ms")
+                if net_shift is not None:
+                    try:
+                        lines.append(f"合成偏移(正=延后,负=提前): {float(net_shift):.2f} ms")
+                    except Exception:
+                        lines.append(f"合成偏移(正=延后,负=提前): {net_shift} ms")
+                if local_chain is not None:
+                    try:
+                        lines.append(f"本地链路延迟: {float(local_chain):.2f} ms")
+                    except Exception:
+                        lines.append(f"本地链路延迟: {local_chain} ms")
+                if next_fire:
+                    lines.append(f"下一次: {next_fire}")
+                if remaining is not None:
+                    lines.append(f"倒计时: {_fmt_ms(remaining)}")
+                self.timing_status_var.set("\n".join(lines))
+            except Exception:
+                pass
+            # 循环刷新
+            try:
+                if hasattr(self, 'app_ref') and self.app_ref and hasattr(self.app_ref, 'root'):
+                    self.app_ref.root.after(1000, self._refresh_timing_status)
+            except Exception:
+                pass
+        try:
+            if hasattr(self, 'app_ref') and self.app_ref and hasattr(self.app_ref, 'root'):
+                self.app_ref.root.after(delay_ms or 0, _do)
+            else:
+                _do()
+        except Exception:
+            _do()

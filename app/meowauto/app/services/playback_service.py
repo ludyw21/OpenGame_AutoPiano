@@ -637,9 +637,9 @@ class PlaybackService:
                              use_analyzed: Optional[bool] = True,
                              controller_ref: Optional[Any] = None) -> bool:
         """基于当前控制器上下文，按指定乐器触发播放。
-        - 优先使用控制器缓存的解析事件（analysis_notes + analysis_file），保持统一管线
-        - 若无解析缓存，则走从路径启动（依旧会在内部进行 pretty_midi 解析并应用预处理）
-        - 乐器影响“分部选择/角色过滤”由外部在 controller 层已设置，服务层按默认行为处理
+        - 架子鼓走专用链路：start_auto_play_midi_drums
+        - 其他乐器走通用链路：start_auto_play_from_path
+        - 乐器影响"分部选择/角色过滤"由外部在 controller 层已设置，服务层按默认行为处理
         """
         try:
             self.init_players()
@@ -654,14 +654,33 @@ class PlaybackService:
                 pass
 
             midi_path = ''
-            analyzed_notes = None
-            use_an = bool(use_analyzed)
             # 从 controller_ref 读取上下文
             if controller_ref is not None:
                 try:
                     midi_path = (getattr(controller_ref, 'midi_path_var', None).get() or '') if hasattr(controller_ref, 'midi_path_var') else ''
                 except Exception:
                     midi_path = ''
+
+            # 绑定回调（进度）
+            try:
+                self.set_auto_callbacks(on_progress=getattr(controller_ref, '_on_play_progress', None))
+            except Exception:
+                pass
+
+            # 架子鼓走专用播放链路
+            if instrument == "架子鼓":
+                if not midi_path:
+                    return False
+                # 使用架子鼓专用的播放方法
+                if hasattr(ap, 'start_auto_play_midi_drums'):
+                    return bool(ap.start_auto_play_midi_drums(midi_path, tempo=tempo))
+                else:
+                    return False
+            
+            # 其他乐器走通用播放链路
+            analyzed_notes = None
+            use_an = bool(use_analyzed)
+            if controller_ref is not None:
                 try:
                     analyzed_notes = getattr(controller_ref, 'analysis_notes', None)
                     analysis_file = getattr(controller_ref, 'analysis_file', None)
@@ -670,12 +689,6 @@ class PlaybackService:
                         analyzed_notes = None
                 except Exception:
                     analyzed_notes = None
-
-            # 绑定回调（进度）
-            try:
-                self.set_auto_callbacks(on_progress=getattr(controller_ref, '_on_play_progress', None))
-            except Exception:
-                pass
 
             if use_an and analyzed_notes:
                 return bool(self.start_auto_play_from_path(midi_path or '', tempo=tempo, use_analyzed=True, analyzed_notes=analyzed_notes))

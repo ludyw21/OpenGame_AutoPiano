@@ -26,6 +26,7 @@ class DrumsController:
             'key_mapping': dict(DRUMS_KEYMAP),  # 可被 UI 覆盖
             # 预留：量化/最短持续/连击合并等
         }
+        self.current_instrument = "架子鼓"  # 用于定时服务识别
 
     # 兼容旧接口
     def start(self):
