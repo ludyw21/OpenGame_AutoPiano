@@ -916,8 +916,8 @@ class MeowFieldAutoPiano:
             row = ttk.Frame(parent)
             row.pack(side=tk.TOP, anchor=tk.W, pady=(0, 6))
 
-            # 自动弹琴按钮（开始/停止由内部逻辑切换文案）
-            self.auto_play_button = ttk.Button(row, text="自动弹琴", command=self._start_auto_play)
+            # 开始演奏按钮（开始/停止由内部逻辑切换文案）
+            self.auto_play_button = ttk.Button(row, text="开始演奏", command=self._start_auto_play)
             self.auto_play_button.pack(side=tk.LEFT, padx=(0, 8))
 
             # 暂停/恢复按钮（默认禁用，开始后启用）
@@ -2147,7 +2147,14 @@ class MeowFieldAutoPiano:
             idx = len(self.playlist.playlist_items)
             item = self.playlist.playlist_items[-1]
             values = (idx, item.get('name'), item.get('type'), item.get('duration'), item.get('status'))
-            self.playlist_tree.insert('', 'end', values=values)
+            
+            # 插入树项并获取item_id
+            item_id = self.playlist_tree.insert('', 'end', values=values)
+            
+            # 将完整文件路径存储到字典中
+            if not hasattr(self, '_file_paths'):
+                self._file_paths = {}
+            self._file_paths[item_id] = os.path.abspath(file_path)
         except Exception:
             pass
 
@@ -2157,8 +2164,16 @@ class MeowFieldAutoPiano:
                 return
             for iid in self.playlist_tree.get_children():
                 self.playlist_tree.delete(iid)
+            
+            # 重新初始化文件路径字典
+            if not hasattr(self, '_file_paths'):
+                self._file_paths = {}
+            self._file_paths.clear()
+            
             for i, it in enumerate(self.playlist.playlist_items, start=1):
-                self.playlist_tree.insert('', 'end', values=(i, it.get('name'), it.get('type'), it.get('duration'), it.get('status')))
+                item_id = self.playlist_tree.insert('', 'end', values=(i, it.get('name'), it.get('type'), it.get('duration'), it.get('status')))
+                # 存储完整文件路径
+                self._file_paths[item_id] = os.path.abspath(it.get('path', ''))
         except Exception:
             pass
 
@@ -2386,8 +2401,8 @@ class MeowFieldAutoPiano:
             else:
                 _do_start()
         except Exception as e:
-            self._log_message(f"启动自动弹琴失败: {str(e)}", "ERROR")
-            messagebox.showerror("错误", f"启动自动弹琴失败:\n{str(e)}")
+            self._log_message(f"启动演奏失败: {str(e)}", "ERROR")
+            messagebox.showerror("错误", f"启动演奏失败:\n{str(e)}")
     
     def _start_midi_play(self):
         """开始MIDI模式演奏"""
@@ -2429,7 +2444,19 @@ class MeowFieldAutoPiano:
                 
                 midi_path = self._file_paths.get(selected[0])
                 if not midi_path:
-                    midi_path = file_name
+                    # 尝试从播放列表管理器中获取完整路径
+                    try:
+                        playlist_item = self.playlist.playlist_items[selected[0]]
+                        midi_path = playlist_item.get('path', '')
+                        if midi_path and os.path.exists(midi_path):
+                            # 更新_file_paths字典以避免下次查找失败
+                            self._file_paths[selected[0]] = os.path.abspath(midi_path)
+                        else:
+                            midi_path = file_name
+                            self._log_message(f"警告: 无法获取播放列表项的完整路径，使用文件名: {file_name}", "WARNING")
+                    except Exception as e:
+                        midi_path = file_name
+                        self._log_message(f"获取播放列表项路径失败: {e}，使用文件名: {file_name}", "ERROR")
             
             # 尝试使用自动演奏功能
             try:
@@ -2617,16 +2644,16 @@ class MeowFieldAutoPiano:
 
                 if success:
                     # 更新按钮状态
-                    self.auto_play_button.configure(text="停止弹琴", command=self._stop_auto_play)
+                    self.auto_play_button.configure(text="停止演奏", command=self._stop_auto_play)
                     self.pause_button.configure(text="暂停", state="normal")
-                    self.ui_manager.set_status(f"自动弹琴已开始: {file_name}")
-                    self._log_message(f"开始自动弹琴: {file_name} ({file_type})", "SUCCESS")
+                    self.ui_manager.set_status(f"开始演奏: {file_name}")
+                    self._log_message(f"开始演奏: {file_name} ({file_type})", "SUCCESS")
                     
-                    # 更新播放列表状态（统一设置为正在播放）
+                    # 更新播放列表状态（统一设置为正在演奏）
                     try:
                         selected = self.playlist_tree.selection()
                         if selected:
-                            self.playlist_tree.set(selected[0], "状态", "正在播放")
+                            self.playlist_tree.set(selected[0], "状态", "正在演奏")
                     except Exception:
                         pass
                     
@@ -2638,11 +2665,11 @@ class MeowFieldAutoPiano:
                         pass
                 else:
                     # 启动失败：标记状态并自动跳过到下一首，避免停滞
-                    self._log_message("自动演奏启动失败，自动跳过到下一首", "ERROR")
+                    self._log_message("演奏启动失败，自动跳过到下一首", "ERROR")
                     try:
                         selected = self.playlist_tree.selection()
                         if selected:
-                            self.playlist_tree.set(selected[0], "状态", "错误")
+                            self.playlist_tree.set(selected[0], "演奏状态", "错误")
                     except Exception:
                         pass
                     try:
@@ -2678,7 +2705,7 @@ class MeowFieldAutoPiano:
                 self._log_message(f"停止自动演奏器失败: {str(e)}", "WARNING")
             
             # 更新按钮状态
-            self.auto_play_button.configure(text="自动弹琴", command=self._start_auto_play)
+            self.auto_play_button.configure(text="开始演奏", command=self._start_auto_play)
             self.pause_button.configure(text="暂停", state="disabled")
             # 取消倒计时并清空显示
             try:
@@ -2689,8 +2716,8 @@ class MeowFieldAutoPiano:
                     self.countdown_label.configure(text="")
             except Exception:
                 pass
-            self.ui_manager.set_status("自动弹琴已停止")
-            self._log_message("自动弹琴已停止")
+            self.ui_manager.set_status("演奏已停止")
+            self._log_message("演奏已停止")
             # 关闭watchdog
             try:
                 self._cancel_auto_next_watchdog()
@@ -2702,10 +2729,10 @@ class MeowFieldAutoPiano:
             # 更新播放列表状态
             selected = self.playlist_tree.selection()
             if selected:
-                self.playlist_tree.set(selected[0], "状态", "已停止")
+                self.playlist_tree.set(selected[0], "演奏状态", "已停止")
             
         except Exception as e:
-            self._log_message(f"停止自动弹琴失败: {str(e)}", "ERROR")
+            self._log_message(f"停止演奏失败: {str(e)}", "ERROR")
     
     
 
@@ -3010,10 +3037,10 @@ class MeowFieldAutoPiano:
             # 禁用暂停按钮
             if hasattr(self, 'pause_button'):
                 self.pause_button.configure(text="暂停", state="disabled")
-            # 重置自动弹琴按钮文本
+            # 重置开始演奏按钮文本
             if hasattr(self, 'auto_play_button'):
                 try:
-                    self.auto_play_button.configure(text="自动弹琴", command=self._start_auto_play)
+                    self.auto_play_button.configure(text="开始演奏", command=self._start_auto_play)
                 except Exception:
                     pass
             # 取消倒计时并清空显示
@@ -3033,7 +3060,7 @@ class MeowFieldAutoPiano:
             try:
                 selected = self.playlist_tree.selection()
                 if selected:
-                    self.playlist_tree.set(selected[0], "状态", "已停止")
+                    self.playlist_tree.set(selected[0], "演奏状态", "已停止")
             except Exception:
                 pass
             # 关闭watchdog
@@ -3045,7 +3072,7 @@ class MeowFieldAutoPiano:
             self._log_message(f"停止播放失败: {str(e)}", "ERROR")
 
     def _play_midi(self):
-        """播放左上选择的MIDI文件（委托服务层）"""
+        """播放MIDI音频（纯音频播放，不触发自动演奏）"""
         try:
             midi_path = self.midi_path_var.get() if hasattr(self, 'midi_path_var') else ''
             if not midi_path:
@@ -3054,19 +3081,10 @@ class MeowFieldAutoPiano:
             if not os.path.exists(midi_path):
                 messagebox.showerror("错误", "MIDI文件不存在")
                 return
-            # 非“架子鼓”：统一走 AutoPlayer，以确保移调/短音过滤/量化/和弦等设置生效
-            cur_inst = getattr(self, 'current_instrument', '电子琴')
-            if cur_inst != '架子鼓':
-                try:
-                    self._log_message("使用AutoPlayer播放MIDI（非架子鼓）：将应用移调/短音过滤/量化等设置", "INFO")
-                    # 统一从自动弹琴入口进入，内部会先下发最新回放设置
-                    self._start_auto_play()
-                    return
-                except Exception as e:
-                    self._log_message(f"通过AutoPlayer播放失败，尝试回退: {e}", "WARNING")
-            # 架子鼓或回退：保持原有直通播放
-            self.ui_manager.set_status("正在播放MIDI...")
-            self._log_message("开始播放MIDI文件(直通)")
+            
+            # 纯音频播放：不使用AutoPlayer，直接播放MIDI音频
+            self.ui_manager.set_status("正在播放MIDI音频...")
+            self._log_message("开始播放MIDI音频（不触发自动演奏）")
             tempo = float(self.tempo_var.get()) if hasattr(self, 'tempo_var') else 1.0
             volume = float(self.volume_var.get()) if hasattr(self, 'volume_var') else 0.7
             ok = False
@@ -3078,10 +3096,10 @@ class MeowFieldAutoPiano:
                 else:
                     ok = False
             except Exception as e:
-                self._log_message(f"启动MIDI播放失败: {e}", "ERROR")
+                self._log_message(f"启动MIDI音频播放失败: {e}", "ERROR")
             if ok:
-                self._log_message("MIDI播放成功", "SUCCESS")
-                self.ui_manager.set_status("MIDI播放中...")
+                self._log_message("MIDI音频播放成功", "SUCCESS")
+                self.ui_manager.set_status("MIDI音频播放中...")
                 if hasattr(self, 'pause_button'):
                     self.pause_button.configure(text="暂停", state="正常" if hasattr(self.pause_button, 'state') else "normal")
                     try:
@@ -3089,9 +3107,9 @@ class MeowFieldAutoPiano:
                     except Exception:
                         pass
             else:
-                self._log_message("MIDI播放失败", "ERROR")
-                self.ui_manager.set_status("MIDI播放失败")
-                messagebox.showerror("错误", "MIDI播放失败，请检查文件格式")
+                self._log_message("MIDI音频播放失败", "ERROR")
+                self.ui_manager.set_status("MIDI音频播放失败")
+                messagebox.showerror("错误", "MIDI音频播放失败，请检查文件格式")
         except ImportError:
             self._log_message("MIDI播放模块不可用", "ERROR")
             messagebox.showerror("错误", "MIDI播放模块不可用，请检查meowauto模块")
@@ -3319,7 +3337,7 @@ class MeowFieldAutoPiano:
                     duration = "未知"
             
             # 插入项目并存储完整路径
-            item_id = self.playlist_tree.insert("", "end", values=(item_count, file_name, file_type, duration, "未播放"))
+            item_id = self.playlist_tree.insert("", "end", values=(item_count, file_name, file_type, duration, "未演奏"))
             # 将完整路径存储到字典中
             self._file_paths[item_id] = abspath
             self._log_message(f"已添加到播放列表: {file_name}")

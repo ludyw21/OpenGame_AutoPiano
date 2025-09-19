@@ -354,21 +354,21 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
 
         # 首次进入时刷新一次，并开启定时刷新
         self._refresh_timing_status(delay_ms=10)
-        # 页面初始化时若启用了 NTP，则确保后台对时线程已启动，并应用当前对时参数
-        def _bootstrap_timing():
-            try:
-                if self.ntp_enabled_var.get():
-                    _apply_servers()
-                    _apply_resync_params()
-            except Exception:
-                pass
-        try:
-            if hasattr(self, 'app_ref') and self.app_ref and hasattr(self.app_ref, 'root'):
-                self.app_ref.root.after(50, _bootstrap_timing)
-            else:
-                _bootstrap_timing()
-        except Exception:
-            _bootstrap_timing()
+        # 页面初始化时禁用自动对时，避免程序启动时触发对时
+        # def _bootstrap_timing():
+        #     try:
+        #         if self.ntp_enabled_var.get():
+        #             _apply_servers()
+        #             _apply_resync_params()
+        #     except Exception:
+        #         pass
+        # try:
+        #     if hasattr(self, 'app_ref') and self.app_ref and hasattr(self.app_ref, 'root'):
+        #         self.app_ref.root.after(50, _bootstrap_timing)
+        #     else:
+        #         _bootstrap_timing()
+        # except Exception:
+        #     _bootstrap_timing()
         # 循环将在 _do 中自行重排 next after
 
     def _create_playlist_section(self, parent):
@@ -384,7 +384,7 @@ T-中音吊镲  W-军鼓  E-底鼓  R-落地嗵鼓"""
                                          show="tree headings", height=4)
         self.playlist_tree.heading("#0", text="文件名", anchor=tk.W)
         self.playlist_tree.heading("type", text="类型", anchor=tk.W)
-        self.playlist_tree.heading("status", text="状态", anchor=tk.W)
+        self.playlist_tree.heading("status", text="演奏状态", anchor=tk.W)
         
         self.playlist_tree.column("#0", width=200)
         self.playlist_tree.column("type", width=80)

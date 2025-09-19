@@ -150,8 +150,17 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
 
     # ========== 事件表 ==========
     if tab_events is not None:
+        # 事件表工具栏
+        evt_toolbar = ttk.Frame(tab_events)
+        evt_toolbar.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(10, 5))
+        
+        # 导出按钮
+        ttk.Button(evt_toolbar, text="导出事件CSV", command=getattr(controller, '_export_event_csv', lambda: None)).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(evt_toolbar, text="导出按键谱", command=getattr(controller, '_export_key_notation', lambda: None)).pack(side=tk.LEFT, padx=(0, 8))
+        
+        # 事件表内容
         evt_top = ttk.Frame(tab_events)
-        evt_top.pack(fill=tk.BOTH, expand=True)
+        evt_top.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         columns = ("#", "time", "type", "note", "channel", "group", "end", "dur", "chord")
         tree = ttk.Treeview(evt_top, columns=columns, show='headings', height=12)
         headers = ["序号","时间","事件","音符","通道","分组","结束","时长", ""]  # 隐藏和弦列标题

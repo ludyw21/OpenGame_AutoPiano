@@ -79,7 +79,7 @@ class PlaylistManager:
                 'name': file_name,
                 'type': file_type,
                 'duration': duration,
-                'status': '未播放'
+                'status': '未演奏'
             }
             
             self.playlist_items.append(item)
@@ -160,9 +160,9 @@ class PlaylistManager:
         # 更新项目状态
         for i, item in enumerate(self.playlist_items):
             if i == index:
-                item['status'] = '当前播放'
-            elif item['status'] == '当前播放':
-                item['status'] = '未播放'
+                item['status'] = '当前演奏'
+            elif item['status'] == '当前演奏':
+                item['status'] = '未演奏'
         
         # 调用当前项目变化回调
         if self.playlist_callbacks['on_current_changed']:

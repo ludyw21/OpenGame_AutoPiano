@@ -205,16 +205,40 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     ttk.Button(pl_toolbar, text="清空", style=styles['danger'], command=getattr(controller, '_clear_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
     ttk.Button(pl_toolbar, text="保存列表", style=styles['secondary'], command=getattr(controller, '_save_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
 
-    # 播放列表：播放控制 + 模式选择
+    # 播放列表：演奏控制 + 模式选择（居中显示，突出主要控件）
     pl_ctrl = ttk.Frame(tab_playlist)
     pl_ctrl.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0,6))
-    ttk.Button(pl_ctrl, text="播放所选", style=styles['success'], command=getattr(controller, '_play_selected_from_playlist', lambda: None)).pack(side=tk.LEFT)
-    ttk.Button(pl_ctrl, text="上一首", style=styles['secondary'], command=getattr(controller, '_play_prev_from_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
-    ttk.Button(pl_ctrl, text="下一首", style=styles['secondary'], command=getattr(controller, '_play_next_from_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
-    ttk.Label(pl_ctrl, text="播放模式:").pack(side=tk.LEFT, padx=(16,4))
+    
+    # 创建居中容器
+    pl_ctrl_center = ttk.Frame(pl_ctrl)
+    pl_ctrl_center.pack(expand=True, fill=tk.X)
+    
+    # 主要演奏控制按钮（大按钮，突出显示）
+    main_buttons_frame = ttk.Frame(pl_ctrl_center)
+    main_buttons_frame.pack(side=tk.TOP, pady=(0, 8))
+    
+    # 开始演奏按钮（主要操作）
+    start_play_btn = ttk.Button(main_buttons_frame, text="开始演奏", style=styles['success'], 
+                                command=getattr(controller, '_play_selected_from_playlist', lambda: None),
+                                width=12)
+    start_play_btn.pack(side=tk.LEFT, padx=(0, 8))
+    
+    # 上一首/下一首按钮（次要操作）
+    ttk.Button(main_buttons_frame, text="上一首", style=styles['secondary'], 
+               command=getattr(controller, '_play_prev_from_playlist', lambda: None),
+               width=8).pack(side=tk.LEFT, padx=(0, 4))
+    ttk.Button(main_buttons_frame, text="下一首", style=styles['secondary'], 
+               command=getattr(controller, '_play_next_from_playlist', lambda: None),
+               width=8).pack(side=tk.LEFT, padx=(0, 8))
+    
+    # 演奏模式选择（居中显示）
+    mode_frame = ttk.Frame(pl_ctrl_center)
+    mode_frame.pack(side=tk.TOP)
+    
+    ttk.Label(mode_frame, text="演奏模式:", font=('TkDefaultFont', 9)).pack(side=tk.LEFT, padx=(0, 8))
     controller.playlist_mode_var = tk.StringVar(value='顺序')
-    mode_combo = ttk.Combobox(pl_ctrl, textvariable=controller.playlist_mode_var, state='readonly', width=10,
-                              values=['单曲','顺序','循环','随机'])
+    mode_combo = ttk.Combobox(mode_frame, textvariable=controller.playlist_mode_var, state='readonly', width=12,
+                              values=['单曲','顺序','循环','随机'], font=('TkDefaultFont', 9))
     mode_combo.pack(side=tk.LEFT)
     try:
         controller.playlist_mode_var.trace_add('write', lambda *args: getattr(controller, '_on_playlist_mode_changed', lambda *a, **k: None)())
@@ -224,9 +248,9 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     # 播放列表：树表 + 滚动条
     pl_body = ttk.Frame(tab_playlist)
     pl_body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
-    columns = ("序号", "文件名", "类型", "时长", "状态")
+    columns = ("序号", "文件名", "类型", "时长", "演奏状态")
     tree = ttk.Treeview(pl_body, columns=columns, show='headings', height=8)
-    headers = ["序号", "文件名", "类型", "时长", "状态"]
+    headers = ["序号", "文件名", "类型", "时长", "演奏状态"]
     widths = [60, 340, 80, 80, 80]
     for i, col in enumerate(columns):
         tree.heading(col, text=headers[i])
@@ -654,7 +678,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     except Exception:
         pass
 
-    # 文件选择（移入“控制”分页顶部）
+    # 文件选择（移入"控制"分页顶部）
     try:
         fs_wrap = ttk.Frame(ctrl_inner)
         fs_wrap.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(8, 8))
@@ -665,15 +689,75 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         except Exception:
             pass
 
+    # 主要演奏控制区域（文件选择下方，居中显示）
+    try:
+        main_control_frame = ttk.LabelFrame(ctrl_inner, text="操作", padding="15")
+        main_control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
+        
+        # 创建居中容器
+        control_center = ttk.Frame(main_control_frame)
+        control_center.pack(expand=True, fill=tk.X)
+        
+        # 主要演奏控制按钮（大按钮，突出显示）
+        main_buttons_row = ttk.Frame(control_center)
+        main_buttons_row.pack(side=tk.TOP, pady=(0, 8))
+        
+        # 开始演奏按钮（主要操作）
+        controller.auto_play_button = ttk.Button(main_buttons_row, text="开始演奏", style=styles['success'], 
+                                                command=getattr(controller, '_start_auto_play', lambda: None),
+                                                width=14)
+        controller.auto_play_button.pack(side=tk.LEFT, padx=(0, 12))
+        
+        # 暂停/恢复按钮（次要操作）
+        controller.pause_button = ttk.Button(main_buttons_row, text="暂停", style=styles['secondary'], 
+                                            command=getattr(controller, '_pause_or_resume', lambda: None),
+                                            width=10, state="disabled")
+        controller.pause_button.pack(side=tk.LEFT, padx=(0, 12))
+        
+        # 倒计时显示标签（在按钮右侧显示倒计时状态）
+        controller.countdown_label = ttk.Label(main_buttons_row, text="", foreground="#FF6B35", font=('TkDefaultFont', 10, 'bold'))
+        controller.countdown_label.pack(side=tk.LEFT, padx=(12, 0))
+        
+        # 倒计时设置（在主要按钮下方）
+        countdown_row = ttk.Frame(control_center)
+        countdown_row.pack(side=tk.TOP, pady=(8, 8))
+        
+        ttk.Label(countdown_row, text="开始前倒计时:").pack(side=tk.LEFT, padx=(0, 6))
+        controller.enable_auto_countdown_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(countdown_row, variable=controller.enable_auto_countdown_var).pack(side=tk.LEFT, padx=(0, 6))
+        controller.auto_countdown_seconds_var = tk.IntVar(value=3)
+        ttk.Spinbox(countdown_row, from_=0, to=30, increment=1, width=6, textvariable=controller.auto_countdown_seconds_var).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(countdown_row, text="秒").pack(side=tk.LEFT, padx=(0, 0))
+        
+        # MIDI音频播放按钮行（区分于自动演奏）
+        midi_buttons_row = ttk.Frame(control_center)
+        midi_buttons_row.pack(side=tk.TOP, pady=(8, 8))
+        
+        ttk.Button(midi_buttons_row, text="播放MIDI音频", style=styles['success'], 
+                   command=getattr(controller, '_play_midi', lambda: None)).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Button(midi_buttons_row, text="停止音频", style=styles['danger'], 
+                   command=getattr(controller, '_stop_playback', lambda: None)).pack(side=tk.LEFT, padx=(0, 0))
+        
+        # 快捷键提示
+        hint = ttk.Label(control_center, text="快捷键: Ctrl+Shift+C=停止所有播放", foreground="#666")
+        hint.pack(side=tk.TOP, pady=(8, 0), anchor=tk.W)
+        
+    except Exception as e:
+        try:
+            controller._log_message(f"主要演奏控制区域创建失败: {e}", "ERROR")
+            import traceback
+            controller._log_message(f"详细错误: {traceback.format_exc()}", "ERROR")
+        except Exception:
+            import traceback
+            print(f"主要演奏控制区域创建失败: {e}")
+            print(f"详细错误: {traceback.format_exc()}")
+
     # 控制页（根据乐器类型提供专属设置）
     try:
-        # 电子琴和吉他：显示通用演奏模式
+        # 电子琴和吉他：显示通用演奏模式（已移至主要演奏控制区域）
         if (instrument or '').strip() in ('电子琴', '吉他', ''):
-            mode_frame = ttk.Frame(ctrl_inner)
-            mode_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(4, 8))
-            ttk.Label(mode_frame, text="演奏模式:").pack(side=tk.LEFT, padx=(0, 16))
-            controller.playback_mode = tk.StringVar(value="midi")
-            ttk.Radiobutton(mode_frame, text="MIDI模式", variable=controller.playback_mode, value="midi", command=controller._on_mode_changed).pack(side=tk.LEFT, padx=(0, 16))
+            # 演奏模式已在主要演奏控制区域设置，此处跳过
+            pass
         
         # 贝斯：简化设置，无和弦功能
         elif (instrument or '').strip() == '贝斯':
@@ -863,33 +947,24 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
 
         # 首次进入时刷新一次，并开启定时刷新
         _refresh_timing_status(delay_ms=10)
-        # 页面初始化时若启用了 NTP，则确保后台对时线程已启动，并应用当前对时参数
-        def _bootstrap_timing():
-            try:
-                if controller.ntp_enabled_var.get():
-                    _apply_servers()
-                    _apply_resync_params()
-            except Exception:
-                pass
-        try:
-            if hasattr(controller, 'root') and controller.root:
-                controller.root.after(50, _bootstrap_timing)
-            else:
-                _bootstrap_timing()
-        except Exception:
-            _bootstrap_timing()
+        # 页面初始化时禁用自动对时，避免程序启动时触发对时
+        # def _bootstrap_timing():
+        #     try:
+        #         if controller.ntp_enabled_var.get():
+        #             _apply_servers()
+        #             _apply_resync_params()
+        #     except Exception:
+        #         pass
+        # try:
+        #     if hasattr(controller, 'root') and controller.root:
+        #         controller.root.after(50, _bootstrap_timing)
+        #     else:
+        #         _bootstrap_timing()
+        # except Exception:
+        #     _bootstrap_timing()
         # 循环将在 _do 中自行重排 next after
 
-        button_frame = ttk.LabelFrame(ctrl_inner, text="操作", padding="10")
-        button_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
-        controller._create_auto_play_controls(button_frame)
-        btn_row = ttk.Frame(button_frame)
-        btn_row.pack(side=tk.TOP, anchor=tk.W, pady=(10,0))
-        ttk.Button(btn_row, text="播放MIDI", style=styles['success'], command=controller._play_midi).pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="停止", style=styles['danger'], command=controller._stop_playback).pack(side=tk.LEFT, padx=(12,0))
-        # 快捷键提示
-        hint = ttk.Label(button_frame, text="快捷键: Ctrl+Shift+C=停止所有播放", foreground="#666")
-        hint.pack(side=tk.TOP, anchor=tk.W, pady=(10,0))
+        # 操作区域已整合到主要的演奏控制区域中，此处跳过
     except Exception as e:
         # 加载失败兜底
         try:
