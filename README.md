@@ -37,7 +37,7 @@ https://pan.baidu.com/s/1Cu8dHEe4PTMhHZG7rvSIBQ?pwd=88cf 提取码: 88cf
 
 4.将解压后的PianoTrans-v1.0文件夹移动到程序根目录
 
-5.右键选择exe以管理员模式打开
+### **`5.右键选择exe以管理员身份运行`**！
 
 ### 使用源码：
 
@@ -62,7 +62,7 @@ https://pan.baidu.com/s/1Cu8dHEe4PTMhHZG7rvSIBQ?pwd=88cf 提取码: 88cf
 
 
 
-## 3. 快速开始（5 步）
+## 3. 快速开始（5 步）(不懂就用默认设置)
 
 1) 选择音频（mp3/wav/flac 等）并点击“音频转 MIDI”；或直接选择 `.mid` 文件。
 2) 在“解析”页签中选择主旋律提取模式与参数（启用或调整“后处理：黑键移调/量化”）。
@@ -173,24 +173,34 @@ https://pan.baidu.com/s/1Cu8dHEe4PTMhHZG7rvSIBQ?pwd=88cf 提取码: 88cf
 ## 9. 故障排查（FAQ）
 
 - 音频转 MIDI 失败或卡住：
-  - 确认 PianoTrans 模型存在：`PianoTrans-v1.0\piano_transcription_inference_data\note_F1=0.9677_pedal_F1=0.9186.pth`
-  - 模型加载较慢；日志出现 “Write out to …” 表示开始输出
+  
+  确认 PianoTrans 模型存在：`PianoTrans-v1.0\piano_transcription_inference_data\note_F1=0.9677_pedal_F1=0.9186.pth`
+  
+  模型加载较慢；日志出现 “Write out to …” 表示开始输出
 - 报 `audioread.exceptions.NoBackendError`：
-  - 确认 `PianoTrans-v1.0\ffmpeg` 存在；重启后重试
+  
+  确认 `PianoTrans-v1.0\ffmpeg` 存在；重启后重试
 - 游戏不识别按键：
-  - 以管理员启动；切换英文输入法；保证游戏在前台；关闭与键盘冲突的软件
+  
+  以管理员启动；切换英文输入法；保证游戏在前台；关闭与键盘冲突的软件
 - 无声：
-  - 检查系统/程序音量与输出设备；确认日志显示“音频系统初始化成功”
+  
+  检查系统/程序音量与输出设备；确认日志显示“音频系统初始化成功”
 - MIDI 直演节奏不稳：
-  - 使用 MIDI 模式；必要时调低倍速或增大量化窗口
+  
+  使用 MIDI 模式；必要时调低倍速或增大量化窗口
 - 解析后事件数不减少/旋律不明显：
-  - 调整主旋律模式与“强度/重复惩罚/阈值”；确保启用单声部化
+  
+  调整主旋律模式与“强度/重复惩罚/阈值”；确保启用单声部化
 - 全局热键无效：
-  - 缺少 `keyboard` 模块或权限受限时自动回退为窗口级；确保程序前台
+  
+  缺少 `keyboard` 模块或权限受限时自动回退为窗口级；确保程序前台
 - Python 依赖缺失：
-  - 运行时若提示缺包，按提示执行 `pip install ...`，或使用 `start_admin_fixed.bat` 自动安装
+  
+  运行时若提示缺包，按提示执行 `pip install ...`，或使用 `start_admin_fixed.bat` 自动安装
 - 路径与可移植性：
-  - 项目使用相对路径；移动目录后无需修改，仅需确保 `PianoTrans-v1.0` 位于项目根目录
+  
+  项目使用相对路径；移动目录后无需修改，仅需确保 `PianoTrans-v1.0` 位于项目根目录
 
 # 致谢
 
