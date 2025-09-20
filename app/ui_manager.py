@@ -121,12 +121,14 @@ class UIManager:
         self.page_container = ttk.Frame(self.main_container)
         self.page_container.grid(row=1, column=0, columnspan=3, sticky=(tk.N, tk.S, tk.E, tk.W))
         self.main_container.rowconfigure(1, weight=1)
-        self.page_container.columnconfigure(0, weight=1)
+        # 配置页面容器为grid布局，支持左右两列
+        self.page_container.columnconfigure(0, weight=1)  # 左侧内容列（自适应）
+        self.page_container.columnconfigure(1, weight=0, minsize=200)  # 右侧演奏列表列（固定200px）
         self.page_container.rowconfigure(0, weight=1)
         
         # 创建主内容区域
         content_frame = ttk.Frame(self.page_container)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        content_frame.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W), padx=10, pady=10)
         
         # 废弃右侧分栏：仅保留左侧主区域，占满可用空间
         self.left_frame = ttk.Frame(content_frame)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
+import os
 try:
     # 嵌入右侧解析面板至左侧分页
     from pages.components.right_pane import create_right_pane as create_right_pane_component  # type: ignore
@@ -133,7 +134,6 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     # 定义各分页内容帧（解析/事件/日志 拆分为三个独立分页）
     tab_controls = ttk.Frame(content_host)
     tab_ensemble = ttk.Frame(content_host)
-    tab_playlist = ttk.Frame(content_host)
     tab_parse = ttk.Frame(content_host)
     tab_events = ttk.Frame(content_host)
     tab_logs = ttk.Frame(content_host)
@@ -148,14 +148,12 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
 
     # 工具函数：切换显示帧
     def switch_tab(name: str):
-        for f in (tab_controls, tab_ensemble, tab_playlist, tab_parse, tab_events, tab_logs, tab_help):
+        for f in (tab_controls, tab_ensemble, tab_parse, tab_events, tab_logs, tab_help):
             f.pack_forget()
         if name == 'controls':
             tab_controls.pack(fill=tk.BOTH, expand=True)
         elif name == 'ensemble' and include_ensemble:
             tab_ensemble.pack(fill=tk.BOTH, expand=True)
-        elif name == 'playlist':
-            tab_playlist.pack(fill=tk.BOTH, expand=True)
         elif name == 'parse':
             tab_parse.pack(fill=tk.BOTH, expand=True)
         elif name == 'events':
@@ -168,7 +166,6 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         btn_map = {
             'controls': btn_controls,
             'ensemble': btn_ensemble if include_ensemble else None,
-            'playlist': btn_playlist,
             'parse': btn_parse_btn,
             'events': btn_events_btn,
             'logs': btn_logs_btn,
@@ -185,8 +182,6 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     if include_ensemble:
         btn_ensemble = ttk.Button(center_bar, text="合奏", style=styles['secondary'], command=lambda: switch_tab('ensemble'))
         btn_ensemble.pack(side=tk.LEFT, padx=(0, 12))
-    btn_playlist = ttk.Button(center_bar, text="播放列表", style=styles['secondary'], command=lambda: switch_tab('playlist'))
-    btn_playlist.pack(side=tk.LEFT, padx=(0, 12))
     btn_parse_btn = ttk.Button(center_bar, text="解析", style=styles['secondary'], command=lambda: switch_tab('parse'))
     btn_parse_btn.pack(side=tk.LEFT, padx=(0, 12))
     btn_events_btn = ttk.Button(center_bar, text="事件表", style=styles['secondary'], command=lambda: switch_tab('events'))
@@ -196,74 +191,8 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     btn_help = ttk.Button(center_bar, text="帮助", style=styles['secondary'], command=lambda: switch_tab('help'))
     btn_help.pack(side=tk.LEFT, padx=(0, 12))
 
-    # 播放列表：工具栏（大按钮 + 颜色）
-    pl_toolbar = ttk.Frame(tab_playlist)
-    pl_toolbar.pack(side=tk.TOP, fill=tk.X, padx=10, pady=8)
-    ttk.Button(pl_toolbar, text="添加文件", style=styles['primary'], command=getattr(controller, '_add_to_playlist', lambda: None)).pack(side=tk.LEFT)
-    ttk.Button(pl_toolbar, text="导入文件夹", style=styles['info'], command=getattr(controller, '_import_folder_to_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
-    ttk.Button(pl_toolbar, text="移除所选", style=styles['warning'], command=getattr(controller, '_remove_from_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
-    ttk.Button(pl_toolbar, text="清空", style=styles['danger'], command=getattr(controller, '_clear_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
-    ttk.Button(pl_toolbar, text="保存列表", style=styles['secondary'], command=getattr(controller, '_save_playlist', lambda: None)).pack(side=tk.LEFT, padx=(8,0))
 
-    # 播放列表：演奏控制 + 模式选择（居中显示，突出主要控件）
-    pl_ctrl = ttk.Frame(tab_playlist)
-    pl_ctrl.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0,6))
-    
-    # 创建居中容器
-    pl_ctrl_center = ttk.Frame(pl_ctrl)
-    pl_ctrl_center.pack(expand=True, fill=tk.X)
-    
-    # 主要演奏控制按钮（大按钮，突出显示）
-    main_buttons_frame = ttk.Frame(pl_ctrl_center)
-    main_buttons_frame.pack(side=tk.TOP, pady=(0, 8))
-    
-    # 开始演奏按钮（主要操作）
-    start_play_btn = ttk.Button(main_buttons_frame, text="开始演奏", style=styles['success'], 
-                                command=getattr(controller, '_play_selected_from_playlist', lambda: None),
-                                width=12)
-    start_play_btn.pack(side=tk.LEFT, padx=(0, 8))
-    
-    # 上一首/下一首按钮（次要操作）
-    ttk.Button(main_buttons_frame, text="上一首", style=styles['secondary'], 
-               command=getattr(controller, '_play_prev_from_playlist', lambda: None),
-               width=8).pack(side=tk.LEFT, padx=(0, 4))
-    ttk.Button(main_buttons_frame, text="下一首", style=styles['secondary'], 
-               command=getattr(controller, '_play_next_from_playlist', lambda: None),
-               width=8).pack(side=tk.LEFT, padx=(0, 8))
-    
-    # 演奏模式选择（居中显示）
-    mode_frame = ttk.Frame(pl_ctrl_center)
-    mode_frame.pack(side=tk.TOP)
-    
-    ttk.Label(mode_frame, text="演奏模式:", font=('TkDefaultFont', 9)).pack(side=tk.LEFT, padx=(0, 8))
-    controller.playlist_mode_var = tk.StringVar(value='顺序')
-    mode_combo = ttk.Combobox(mode_frame, textvariable=controller.playlist_mode_var, state='readonly', width=12,
-                              values=['单曲','顺序','循环','随机'], font=('TkDefaultFont', 9))
-    mode_combo.pack(side=tk.LEFT)
-    try:
-        controller.playlist_mode_var.trace_add('write', lambda *args: getattr(controller, '_on_playlist_mode_changed', lambda *a, **k: None)())
-    except Exception:
-        pass
 
-    # 播放列表：树表 + 滚动条
-    pl_body = ttk.Frame(tab_playlist)
-    pl_body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
-    columns = ("序号", "文件名", "类型", "时长", "演奏状态")
-    tree = ttk.Treeview(pl_body, columns=columns, show='headings', height=8)
-    headers = ["序号", "文件名", "类型", "时长", "演奏状态"]
-    widths = [60, 340, 80, 80, 80]
-    for i, col in enumerate(columns):
-        tree.heading(col, text=headers[i])
-        tree.column(col, width=widths[i], anchor=tk.W if i in (1,) else tk.CENTER)
-    vbar = ttk.Scrollbar(pl_body, orient=tk.VERTICAL, command=tree.yview)
-    tree.configure(yscrollcommand=vbar.set)
-    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    vbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-    # 将句柄挂到 controller，供 app 工作流使用
-    controller.playlist_tree = tree
-    if not hasattr(controller, '_file_paths') or not isinstance(getattr(controller, '_file_paths'), dict):
-        controller._file_paths = {}
     # 在“解析/事件/日志”三页中分别嵌入原组件的对应部分
     try:
         from pages.components.right_pane import create_right_pane_component
@@ -614,14 +543,23 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
                         pass
         except Exception:
             pass
-    except Exception:
-        pass
+    except Exception as e:
+        # 添加调试信息
+        if hasattr(controller, '_log_message'):
+            controller._log_message(f"主要演奏控制区域创建失败: {e}", "ERROR")
+        else:
+            print(f"主要演奏控制区域创建失败: {e}")
+        import traceback
+        traceback.print_exc()
 
     # 默认显示“控制”页（再次调用确保初始渲染）
     switch_tab('controls')
     try:
         # 记录一次可见性统计，辅助排查
         cnt = len(tab_controls.winfo_children())
+        print(f"DEBUG: tab_controls子控件个数: {cnt}")
+        for i, child in enumerate(tab_controls.winfo_children()):
+            print(f"DEBUG: tab_controls子控件 {i}: {type(child).__name__}")
         controller._log_message(f"控制分页子控件个数: {cnt}", "INFO")
     except Exception:
         pass
@@ -663,6 +601,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     # 控制页：直接使用容器帧（不使用内层滚动条），避免双滚动条
     ctrl_inner = ttk.Frame(tab_controls)
     ctrl_inner.pack(fill=tk.BOTH, expand=True)
+    print("DEBUG: ctrl_inner创建成功")
 
     # 顶部当前乐器提示（仅提示，不改变布局逻辑）
     try:
@@ -678,38 +617,110 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     except Exception:
         pass
 
-    # 文件选择（移入"控制"分页顶部）
-    try:
-        fs_wrap = ttk.Frame(ctrl_inner)
-        fs_wrap.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(8, 8))
-        controller._create_file_selection_component(parent_left=fs_wrap)
-    except Exception as e:
-        try:
-            controller._log_message(f"文件选择组件创建失败: {e}", "ERROR")
-        except Exception:
-            pass
+    # 文件选择已合并到操作控制区域，移除单独的文件选择组件
 
     # 主要演奏控制区域（文件选择下方，居中显示）
     try:
+        print("DEBUG: 开始创建主要演奏控制区域")
         main_control_frame = ttk.LabelFrame(ctrl_inner, text="操作", padding="15")
         main_control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
+        print("DEBUG: 主控制框架创建成功")
         
         # 创建居中容器
         control_center = ttk.Frame(main_control_frame)
         control_center.pack(expand=True, fill=tk.X)
         
-        # 主要演奏控制按钮（大按钮，突出显示）
+        # 文件选择区域（合并到操作控制中）
+        file_frame = ttk.Frame(control_center)
+        file_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        
+        # 确保midi_path_var存在（使用主应用程序的共享变量）
+        if not hasattr(controller, 'midi_path_var'):
+            controller.midi_path_var = tk.StringVar(value="")
+        
+        # 文件路径输入
+        path_entry = ttk.Entry(file_frame, textvariable=controller.midi_path_var, width=30)
+        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        # 浏览文件按钮
+        def _browse_and_add():
+            try:
+                from tkinter import filedialog
+                file_path = filedialog.askopenfilename(
+                    title="选择MIDI文件",
+                    filetypes=[("MIDI文件", "*.mid *.midi"), ("所有文件", "*.*")]
+                )
+                if file_path:
+                    # 添加到演奏列表
+                    if hasattr(controller, 'playlist') and controller.playlist:
+                        if controller.playlist.add_item(file_path):
+                            controller._append_playlist_tree_row(file_path)
+                    
+                    # 自动加载文件到主页面
+                    controller.midi_path_var.set(file_path)
+                    
+                    # 更新文件信息显示
+                    if hasattr(controller, '_update_file_info_display'):
+                        controller._update_file_info_display(file_path)
+                    
+                    # 检查当前页面是否为架子鼓页面
+                    current_page = getattr(controller, 'current_page', None)
+                    if current_page and hasattr(current_page, '_load_midi_from_playlist'):
+                        # 架子鼓页面：使用架子鼓专属的加载方法
+                        success = current_page._load_midi_from_playlist(file_path)
+                        if success:
+                            controller._log_message(f"已加载文件到架子鼓页面: {os.path.basename(file_path)}", "SUCCESS")
+                        else:
+                            controller._log_message("加载文件到架子鼓页面失败", "ERROR")
+                    else:
+                        # 其他页面：使用通用的加载方法
+                        controller.playback_mode.set("midi")
+                        
+                        # 解析MIDI文件
+                        try:
+                            if hasattr(controller, '_analyze_current_midi'):
+                                controller._analyze_current_midi()
+                                controller._log_message(f"已加载并解析文件到主页面: {os.path.basename(file_path)}", "SUCCESS")
+                        except Exception as e:
+                            controller._log_message(f"解析失败: {e}", "ERROR")
+                            
+            except Exception as e:
+                if hasattr(controller, '_log_message'):
+                    controller._log_message(f"浏览文件失败: {e}", "ERROR")
+        
+        ttk.Button(file_frame, text="浏览", command=_browse_and_add, width=8).pack(side=tk.RIGHT)
+        
+        # 文件信息显示
+        if not hasattr(controller, 'file_info_var'):
+            controller.file_info_var = tk.StringVar(value="未选择文件")
+        
+        info_label = ttk.Label(control_center, textvariable=controller.file_info_var, 
+                              foreground="#666666", font=("TkDefaultFont", 9), anchor="w")
+        info_label.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        
+        # 主要演奏控制按钮（合并开始/停止演奏）
         main_buttons_row = ttk.Frame(control_center)
         main_buttons_row.pack(side=tk.TOP, pady=(0, 8))
         
-        # 开始演奏按钮（主要操作）
+        # 演奏控制按钮（合并开始/停止演奏）
+        def _toggle_auto_play():
+            try:
+                if hasattr(controller, 'auto_play_button'):
+                    current_text = controller.auto_play_button.cget("text")
+                    if current_text == "开始演奏":
+                        controller._start_auto_play()
+                    elif current_text == "停止演奏":
+                        controller._stop_auto_play()
+            except Exception as e:
+                controller._log_message(f"切换演奏状态失败: {e}", "ERROR")
+        
         controller.auto_play_button = ttk.Button(main_buttons_row, text="开始演奏", style=styles['success'], 
-                                                command=getattr(controller, '_start_auto_play', lambda: None),
-                                                width=14)
+                                                command=_toggle_auto_play,
+                                                width=12)
         controller.auto_play_button.pack(side=tk.LEFT, padx=(0, 12))
         
         # 暂停/恢复按钮（次要操作）
-        controller.pause_button = ttk.Button(main_buttons_row, text="暂停", style=styles['secondary'], 
+        controller.pause_button = ttk.Button(main_buttons_row, text="暂停", style=styles['warning'], 
                                             command=getattr(controller, '_pause_or_resume', lambda: None),
                                             width=10, state="disabled")
         controller.pause_button.pack(side=tk.LEFT, padx=(0, 12))
@@ -729,14 +740,45 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         ttk.Spinbox(countdown_row, from_=0, to=30, increment=1, width=6, textvariable=controller.auto_countdown_seconds_var).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Label(countdown_row, text="秒").pack(side=tk.LEFT, padx=(0, 0))
         
-        # MIDI音频播放按钮行（区分于自动演奏）
+        # 演奏列表操作按钮行
+        playlist_buttons_row = ttk.Frame(control_center)
+        playlist_buttons_row.pack(side=tk.TOP, pady=(8, 8))
+        
+        # 演奏列表按钮（文件选择已合并到上方，这里只保留管理功能）
+        ttk.Button(playlist_buttons_row, text="导入文件夹", style=styles['info'], 
+                  command=getattr(controller, '_import_folder_to_playlist', lambda: None),
+                  width=10).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(playlist_buttons_row, text="移除", style=styles['warning'], 
+                  command=getattr(controller, '_remove_from_playlist', lambda: None),
+                  width=6).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(playlist_buttons_row, text="清空", style=styles['danger'], 
+                  command=getattr(controller, '_clear_playlist', lambda: None),
+                  width=6).pack(side=tk.LEFT, padx=(0, 6))
+        
+        # 移除重复的计划按钮，这些功能在定时功能中已有合并按钮
+        
+        # MIDI音频播放按钮行（合并播放/停止音频）
         midi_buttons_row = ttk.Frame(control_center)
         midi_buttons_row.pack(side=tk.TOP, pady=(8, 8))
         
-        ttk.Button(midi_buttons_row, text="播放MIDI音频", style=styles['success'], 
-                   command=getattr(controller, '_play_midi', lambda: None)).pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Button(midi_buttons_row, text="停止音频", style=styles['danger'], 
-                   command=getattr(controller, '_stop_playback', lambda: None)).pack(side=tk.LEFT, padx=(0, 0))
+        def _toggle_midi_playback():
+            try:
+                if hasattr(controller, 'midi_play_button'):
+                    current_text = controller.midi_play_button.cget("text")
+                    if current_text == "播放MIDI音频":
+                        controller._play_midi()
+                        # 更新按钮状态
+                        controller.midi_play_button.configure(text="停止音频", style=styles['danger'])
+                    elif current_text == "停止音频":
+                        controller._stop_playback()
+                        # 更新按钮状态
+                        controller.midi_play_button.configure(text="播放MIDI音频", style=styles['info'])
+            except Exception as e:
+                controller._log_message(f"切换MIDI播放状态失败: {e}", "ERROR")
+        
+        controller.midi_play_button = ttk.Button(midi_buttons_row, text="播放MIDI音频", style=styles['info'], 
+                                                command=_toggle_midi_playback, width=12)
+        controller.midi_play_button.pack(side=tk.LEFT, padx=(0, 0))
         
         # 快捷键提示
         hint = ttk.Label(control_center, text="快捷键: Ctrl+Shift+C=停止所有播放", foreground="#666")
@@ -782,7 +824,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         ttk.Spinbox(av_frame, from_=0.25, to=3.0, increment=0.05, textvariable=controller.tempo_var, width=8).pack(side=tk.LEFT, padx=(10, 16))
 
         # 定时触发（单次）
-        timing_frame = ttk.LabelFrame(ctrl_inner, text="定时触发（单次·NTP对时+延迟/补偿）", padding="10")
+        timing_frame = ttk.LabelFrame(ctrl_inner, text="定时触发", padding="10")
         timing_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 10))
         # 时间输入：HH:MM:SS.mmm
         ttk.Label(timing_frame, text="目标时间(24h):").grid(row=0, column=0, sticky=tk.W)
@@ -798,38 +840,28 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         ttk.Label(timing_frame, text=".").grid(row=0, column=6, sticky=tk.W)
         ttk.Spinbox(timing_frame, from_=0, to=999, width=6, textvariable=controller.timing_ms_var).grid(row=0, column=7, sticky=tk.W)
 
-        # 对时控制（执行后刷新状态）
+        # 对时控制（仅保留启用公网对时）
         def _btn_enable_net():
             getattr(controller.playback_controller, '_timing_enable_network_clock', lambda: None)()
             _refresh_timing_status(delay_ms=50)
-        def _btn_sync_now():
-            getattr(controller.playback_controller, '_timing_sync_now', lambda: None)()
-            _refresh_timing_status(delay_ms=50)
-        def _btn_use_local():
-            getattr(controller.playback_controller, '_timing_use_local', lambda: None)()
-            _refresh_timing_status(delay_ms=50)
         ttk.Button(timing_frame, text="启用公网对时", command=_btn_enable_net).grid(row=1, column=0, sticky=tk.W, pady=(6,0))
-        ttk.Button(timing_frame, text="手动对时", command=_btn_sync_now).grid(row=1, column=1, sticky=tk.W, padx=(6,0), pady=(6,0))
-        ttk.Button(timing_frame, text="切回本地时钟", command=_btn_use_local).grid(row=1, column=2, sticky=tk.W, padx=(6,0), pady=(6,0))
 
-        # NTP 服务器选择/关闭
-        ttk.Label(timing_frame, text="NTP服务器(逗号分隔):").grid(row=4, column=0, sticky=tk.W, pady=(6,0))
+        # NTP 服务器设置（简化）
+        ntp_frame = ttk.Frame(timing_frame)
+        ntp_frame.grid(row=4, column=0, columnspan=8, sticky=tk.W+tk.E, pady=(6,0))
+        ttk.Label(ntp_frame, text="NTP服务器:").pack(side=tk.LEFT)
         try:
-            default_servers = "ntp.ntsc.ac.cn,time1.cloud.tencent.com,time2.cloud.tencent.com"
+            default_servers = "ntp.ntsc.ac.cn,time1.cloud.tencent.com"
             controller.timing_servers_var = tk.StringVar(value=default_servers)
         except Exception:
             pass
-        server_entry = ttk.Entry(timing_frame, textvariable=controller.timing_servers_var, width=48)
-        server_entry.grid(row=4, column=1, columnspan=4, sticky=tk.W+tk.E, padx=(6,0), pady=(6,0))
-        def _apply_servers():
-            getattr(controller.playback_controller, '_timing_apply_servers', lambda: None)()
-            _refresh_timing_status(delay_ms=100)
-        ttk.Button(timing_frame, text="应用服务器", style=styles['secondary'], command=_apply_servers).grid(row=4, column=5, sticky=tk.W, padx=(6,0), pady=(6,0))
+        server_entry = ttk.Entry(ntp_frame, textvariable=controller.timing_servers_var, width=30)
+        server_entry.pack(side=tk.LEFT, padx=(6,12))
         controller.ntp_enabled_var = tk.BooleanVar(value=True)
         def _toggle_ntp():
             getattr(controller.playback_controller, '_timing_toggle_ntp', lambda *_: None)(controller.ntp_enabled_var.get())
             _refresh_timing_status(delay_ms=100)
-        ttk.Checkbutton(timing_frame, text="启用NTP", variable=controller.ntp_enabled_var, command=_toggle_ntp).grid(row=4, column=6, sticky=tk.W, padx=(12,0), pady=(6,0))
+        ttk.Checkbutton(ntp_frame, text="启用NTP", variable=controller.ntp_enabled_var, command=_toggle_ntp).pack(side=tk.LEFT)
 
         # 对时参数：间隔与重排阈值
         ttk.Label(timing_frame, text="对时间隔(s):").grid(row=5, column=0, sticky=tk.W, pady=(6,0))
@@ -858,20 +890,60 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         controller.timing_status_var = tk.StringVar(value="状态: 未对时")
         ttk.Label(timing_frame, textvariable=controller.timing_status_var, foreground="#666").grid(row=2, column=2, columnspan=6, sticky=tk.W, padx=(12,0), pady=(6,0))
 
-        # 操作按钮
-        def _btn_schedule():
-            getattr(controller.playback_controller, '_timing_schedule_for_current_instrument', lambda: None)()
-            # 计划创建后立即刷新一次，便于看到“实时对时/延迟”
-            _refresh_timing_status(delay_ms=50)
-        def _btn_cancel():
-            getattr(controller.playback_controller, '_timing_cancel_schedule', lambda: None)()
-            _refresh_timing_status(delay_ms=50)
+        # 操作按钮（合并创建/取消计划按钮）
+        def _toggle_schedule():
+            pc = getattr(controller, 'playback_controller', None)
+            if not pc:
+                return
+            
+            # 检查当前按钮状态
+            current_text = controller.schedule_button.cget("text")
+            if current_text == "创建计划":
+                # 创建计划
+                pc._timing_schedule_for_current_instrument()
+                # 延迟更新按钮状态
+                controller.root.after(100, lambda: _update_schedule_button_state())
+            elif current_text == "取消计划":
+                # 取消计划
+                pc._timing_cancel_schedule()
+                # 延迟更新按钮状态
+                controller.root.after(100, lambda: _update_schedule_button_state())
+            
+            _refresh_timing_status(delay_ms=100)
+        
+        def _update_schedule_button_state():
+            """更新计划按钮状态（根据实际计划状态）"""
+            try:
+                pc = getattr(controller, 'playback_controller', None)
+                if not pc or not hasattr(controller, 'schedule_button'):
+                    return
+                
+                # 检查播放控制器是否有活跃的计划
+                has_schedule = False
+                try:
+                    if (hasattr(pc, '_last_schedule_id') and pc._last_schedule_id):
+                        has_schedule = True
+                except Exception:
+                    pass
+                
+                if has_schedule:
+                    controller.schedule_button.configure(text="取消计划", style=styles['danger'])
+                else:
+                    controller.schedule_button.configure(text="创建计划", style=styles['primary'])
+            except Exception as e:
+                try:
+                    controller._log_message(f"更新计划按钮状态失败: {e}", "ERROR")
+                except Exception:
+                    pass
+        
         def _btn_test_now():
             getattr(controller.playback_controller, '_timing_test_now', lambda: None)()
             _refresh_timing_status(delay_ms=50)
-        ttk.Button(timing_frame, text="创建计划", style=styles['primary'], command=_btn_schedule).grid(row=3, column=0, sticky=tk.W, pady=(8,0))
-        ttk.Button(timing_frame, text="取消计划", style=styles['warning'], command=_btn_cancel).grid(row=3, column=1, sticky=tk.W, padx=(6,0), pady=(8,0))
-        ttk.Button(timing_frame, text="立即按计划测试一次", style=styles['info'], command=_btn_test_now).grid(row=3, column=2, sticky=tk.W, padx=(6,0), pady=(8,0))
+        
+        # 创建合并的调度按钮
+        controller.schedule_button = ttk.Button(timing_frame, text="创建计划", style=styles['primary'], command=_toggle_schedule)
+        controller.schedule_button.grid(row=3, column=0, sticky=tk.W, pady=(8,0))
+        ttk.Button(timing_frame, text="立即测试", style=styles['info'], command=_btn_test_now).grid(row=3, column=1, sticky=tk.W, padx=(6,0), pady=(8,0))
         for c in range(8):
             try:
                 timing_frame.grid_columnconfigure(c, weight=1)
@@ -992,9 +1064,6 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
             controller._last_split_parts = parts or {}
             # 自动根据乐器偏好勾选（非鼓勾选非 ch9；鼓勾选 ch9）
             controller._selected_part_names = set()
-            _refresh_parts_tree()
-            _auto_select_parts()
-            _refresh_parts_tree()
             # 将当前选择推送到服务层过滤器
             try:
                 ps = getattr(controller, 'playback_service', None)
