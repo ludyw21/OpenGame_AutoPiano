@@ -2667,7 +2667,7 @@ class MeowFieldAutoPiano:
 
 
     def _populate_event_table(self):
-
+        
         """根据 self.analysis_notes 填充事件表"""
 
         try:
@@ -2687,6 +2687,10 @@ class MeowFieldAutoPiano:
             rows = []
 
             seq = 1
+            # 统计超限音符数量
+            out_of_range_count = 0
+            # 获取是否仅显示超限音符的开关状态，默认为True
+            show_only_out_of_range = getattr(self, 'show_only_out_of_range_var', tk.BooleanVar(value=True)).get()
 
             for n in sorted(notes, key=lambda x: (x.get('start_time', 0.0), x.get('note', 0))):
 
@@ -2699,6 +2703,14 @@ class MeowFieldAutoPiano:
                 ch = n.get('channel', 0)
 
                 note = n.get('note', 0)
+                # 检查是否为超限音符（<48 或 >83）
+                is_out_of_range = note < 48 or note > 83
+                if is_out_of_range:
+                    out_of_range_count += 1
+                
+                # 根据开关状态决定是否添加此行
+                if show_only_out_of_range and not is_out_of_range:
+                    continue
 
                 grp = n.get('group', groups.group_for_note(note))
 
@@ -2710,17 +2722,50 @@ class MeowFieldAutoPiano:
 
                 # 在 note_on 行展示结束时间与时长；note_off 行仅展示结束时间
 
-                rows.append((seq, st, 'note_on', note, ch, grp, et, dur, chord_col))
+                rows.append((seq, st, 'note_on', note, ch, grp, et, dur, chord_col, is_out_of_range))
 
                 seq += 1
 
-                rows.append((seq, et, 'note_off', note, ch, grp, et, '', ''))
+                rows.append((seq, et, 'note_off', note, ch, grp, et, '', '', is_out_of_range))
 
                 seq += 1
+
+            # 尝试获取warning样式
+            warning_style = None
+            try:
+                from pages.components.playback_controls import _init_button_styles
+                styles = _init_button_styles(getattr(self, 'root', None))
+                warning_style = styles['warning']
+            except Exception:
+                pass
 
             for r in rows:
+                # 获取行数据（移除最后一个元素is_out_of_range）
+                row_data = r[:-1]
+                # 获取是否超限标记
+                is_out_of_range = r[-1]
+                # 插入行
+                item_id = self.event_tree.insert('', tk.END, values=row_data)
+                # 如果是超限音符，尝试应用warning样式
+                if is_out_of_range:
+                    try:
+                        # 使用Treeview的tag功能
+                        self.event_tree.item(item_id, tags=('warning',))
+                    except:
+                        pass
 
-                self.event_tree.insert('', tk.END, values=r)
+            # 更新超限音符数量显示
+            try:
+                # 尝试直接通过self访问变量
+                self.out_of_range_count_var.set(f"超限音符数量：{out_of_range_count}")
+            except (AttributeError, tk.TclError):
+                # 如果失败，尝试通过ui_manager访问
+                try:
+                    if hasattr(self, 'ui_manager') and hasattr(self.ui_manager, 'out_of_range_count_var'):
+                        self.ui_manager.out_of_range_count_var.set(f"超限音符数量：{out_of_range_count}")
+                except:
+                    # 如果所有方法都失败，记录错误但继续执行
+                    self._log_message("更新超限音符数量显示失败", "DEBUG")
 
         except Exception as e:
 
@@ -7608,4 +7653,4 @@ class MeowFieldAutoPiano:
 
             self.event_bus.publish(Events.SYSTEM_ERROR, {'message': error_msg}, 'App')
 
-            print(error_msg) 
+            print(error_msg)

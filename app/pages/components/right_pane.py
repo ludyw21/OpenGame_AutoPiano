@@ -158,13 +158,64 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         ttk.Button(evt_toolbar, text="导出事件CSV", command=getattr(controller, '_export_event_csv', lambda: None)).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(evt_toolbar, text="导出按键谱", command=getattr(controller, '_export_key_notation', lambda: None)).pack(side=tk.LEFT, padx=(0, 8))
         
+        # 超限音符显示开关和数量提示
+        controller.out_of_range_count_var = tk.StringVar(value="超限音符数量：0")
+        # 创建开关变量，默认为True（开启）
+        controller.show_only_out_of_range_var = tk.BooleanVar(value=True)
+        
+        # 开关容器
+        switch_frame = ttk.Frame(evt_toolbar)
+        switch_frame.pack(side=tk.LEFT, padx=(20, 8))
+        
+        try:
+            # 尝试获取warning样式
+            from pages.components.playback_controls import _init_button_styles
+            styles = _init_button_styles(getattr(controller, 'root', None))
+            
+            # 创建标签
+            ttk.Label(switch_frame, textvariable=controller.out_of_range_count_var, style=styles['warning']).pack(side=tk.LEFT, padx=(0, 8))
+            
+            # 创建开关按钮
+            def toggle_display(event=None):
+                """切换超限音符显示状态"""
+                try:
+                    if hasattr(controller, '_populate_event_table'):
+                        controller._populate_event_table()
+                except Exception:
+                    pass
+            
+            # 添加开关按钮
+            switch_btn = ttk.Checkbutton(switch_frame, text="仅显示超限音符", 
+                                        variable=controller.show_only_out_of_range_var, 
+                                        command=toggle_display, 
+                                        style=controller.ui_manager.accent_button_style if hasattr(controller, 'ui_manager') else '')
+            switch_btn.pack(side=tk.LEFT)
+        except Exception:
+            # 如果获取样式失败，使用默认样式
+            ttk.Label(switch_frame, textvariable=controller.out_of_range_count_var).pack(side=tk.LEFT, padx=(0, 8))
+            
+            # 创建开关按钮
+            def toggle_display(event=None):
+                """切换超限音符显示状态"""
+                try:
+                    if hasattr(controller, '_populate_event_table'):
+                        controller._populate_event_table()
+                except Exception:
+                    pass
+            
+            # 添加开关按钮
+            switch_btn = ttk.Checkbutton(switch_frame, text="仅显示超限音符", 
+                                        variable=controller.show_only_out_of_range_var, 
+                                        command=toggle_display)
+            switch_btn.pack(side=tk.LEFT)
+        
         # 事件表内容
         evt_top = ttk.Frame(tab_events)
         evt_top.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         columns = ("#", "time", "type", "note", "channel", "group", "end", "dur", "chord")
         tree = ttk.Treeview(evt_top, columns=columns, show='headings', height=50)
         headers = ["序号","时间","事件","音符","通道","分组","结束","时长", ""]  # 隐藏和弦列标题
-        widths =  [100,    110,  110,  100,   100,  150,  100,   100, 0]  # 和弦列宽度设为 0
+        widths =  [100,    110,  110,  100,   100,  180,  100,   100, 0]  # 和弦列宽度设为 0
         for i, col in enumerate(columns):
             tree.heading(col, text=headers[i])
             tree.column(col, width=widths[i], minwidth=0, stretch=False, anchor=tk.CENTER)

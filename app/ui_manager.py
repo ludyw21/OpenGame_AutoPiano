@@ -62,6 +62,23 @@ class UIManager:
             # Treeview 行高
             self.style.configure('Treeview', rowheight=40, font=("Segoe UI", 10))
             self.style.configure('Treeview.Heading', font=("Segoe UI", 10, 'bold'))
+            
+            # 为Treeview添加warning标签样式
+            try:
+                if self.use_ttkbootstrap:
+                    # ttkbootstrap环境下，使用warning颜色
+                    self.style.configure('Treeview.warning', foreground=self.style.colors.warning, background=self.style.colors.light)
+                else:
+                    # 原生ttk环境下，使用默认warning颜色
+                    self.style.configure('Treeview.warning', foreground='orange', background='#FFF2CC')
+                # 将标签与样式关联
+                self.style.map('Treeview',
+                    foreground=[('selected', 'warning', 'black')],
+                    background=[('selected', 'warning', '#FFCC00')]
+                )
+            except Exception:
+                pass
+            
             # Combobox 箭头大小
             self.style.configure('TCombobox', arrowsize=16)
             # 统一字体样式

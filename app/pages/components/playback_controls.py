@@ -137,7 +137,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
             tab_logs.pack(fill=tk.BOTH, expand=True)
         elif name == 'help':
             tab_help.pack(fill=tk.BOTH, expand=True)
-        # 更新按钮激活样式（简化为 primary 表示激活）
+        # 更新按钮激活样式（简化为 success 表示激活）
         btn_map = {
             'controls': btn_controls,
             'ensemble': btn_ensemble if include_ensemble else None,
@@ -149,7 +149,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         for key, btn in btn_map.items():
             if not btn:
                 continue
-            btn.configure(style=styles['primary'] if key == name else styles['secondary'])
+            btn.configure(style=styles['success'] if key == name else styles['secondary'])
 
     # 创建按钮
     btn_controls = ttk.Button(center_bar, text="控制", style=styles['primary'], command=lambda: switch_tab('controls'))
