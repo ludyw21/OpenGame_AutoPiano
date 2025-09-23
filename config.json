@@ -61,7 +61,7 @@
         "max_tries": 5
     },
     "ui": {
-        "theme_name": "flatly",
+        "theme_name": "pink",
         "theme_mode": "light",
         "density": "comfortable",
         "scaling": "auto",

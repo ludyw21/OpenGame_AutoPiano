@@ -20,10 +20,10 @@ class UIManager:
         self.event_bus = event_bus
         self.components: Dict[str, Any] = {}
         self.themes = {
-            'light': ['flatly', 'litera', 'cosmo', 'sandstone'],
+            'light': ['pink', 'flatly', 'litera', 'cosmo', 'sandstone'],
             'dark': ['darkly', 'superhero', 'cyborg', 'solar']
         }
-        self.current_theme = 'flatly'
+        self.current_theme = 'pink'
         self.current_mode = 'light'
         self.scaling_factor = 1.0
         self.density = 'comfortable'
@@ -47,7 +47,7 @@ class UIManager:
         """初始化样式系统"""
         try:
             import ttkbootstrap as tb
-            self.style = tb.Style(theme="flatly")
+            self.style = tb.Style(theme="pink")
             self.use_ttkbootstrap = True
         except ImportError:
             self.style = ttk.Style()

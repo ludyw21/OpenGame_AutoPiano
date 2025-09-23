@@ -27,32 +27,6 @@ class Sidebar:
         # 占位分隔
         ttk.Separator(self._container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 4))
 
-        # 初始化样式（与分页标签栏一致的蓝白设计语言）
-        try:
-            style = ttk.Style()
-            # 普通状态：浅蓝底蓝字
-            style.configure('MF.Sidebar.TButton', 
-                           font=("Segoe UI", 11, "normal"), 
-                           padding=(10, 8),
-                           foreground='#0A84FF', 
-                           background='#E6F0FF',
-                           relief='flat', 
-                           borderwidth=0)
-            style.map('MF.Sidebar.TButton', 
-                     background=[('active', '#D9E8FF'), ('pressed', '#C8DCFF')])
-            # 激活状态：蓝底白字
-            style.configure('MF.Sidebar.Active.TButton', 
-                           font=("Segoe UI", 11, "normal"), 
-                           padding=(10, 8),
-                           foreground='white', 
-                           background='#0A84FF',
-                           relief='flat', 
-                           borderwidth=0)
-            style.map('MF.Sidebar.Active.TButton', 
-                     background=[('active', '#0A6DFF'), ('pressed', '#095EC8')])
-        except Exception:
-            pass
-
         # 乐器板块
         inst_label = ttk.Label(self._container, text="乐器板块", anchor=tk.W)
         inst_label.pack(padx=6, pady=(2, 0), fill=tk.X)

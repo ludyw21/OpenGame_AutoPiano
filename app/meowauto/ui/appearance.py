@@ -21,7 +21,7 @@ class AppearanceManager:
         # theme
         try:
             if tb is not None:
-                theme = ui_cfg.get("theme_name", "flatly")
+                theme = ui_cfg.get("theme_name", "pink")
                 self.style = tb.Style(theme=theme)
             else:
                 self.style = ttk.Style()

@@ -33,32 +33,7 @@ def _init_button_styles(root: tk.Misc | None = None) -> dict:
     # 颜色在原生 ttk 下可能不完全生效，但字体/尺寸会生效；ttkbootstrap 下使用主题色
     for key, sname in styles.items():
         style.configure(sname, **base)
-    # 背景色（尽力在原生 ttk 下生效；若无效则依赖 ttkbootstrap 或系统主题近似）
-    try:
-        style.configure('MF.Primary.TButton', foreground='white', background='#0A84FF')
-        style.map('MF.Primary.TButton', background=[('active', '#0A6DFF'), ('pressed', '#095EC8')])
-        style.configure('MF.Secondary.TButton', foreground='#0A84FF', background='#E6F0FF')
-        style.map('MF.Secondary.TButton', background=[('active', '#D9E8FF'), ('pressed', '#C8DCFF')])
-    except Exception:
-        pass
-    # Win11 强调色映射：hover/active/selected 前景变蓝
-    try:
-        accent = '#0A84FF'
-        # 扁平化风格：无描边
-        for s in ('MF.Primary.TButton','MF.Secondary.TButton','MF.Success.TButton','MF.Danger.TButton','MF.Warning.TButton','MF.Info.TButton'):
-            style.configure(s, relief='flat', borderwidth=0)
-        style.map('MF.Primary.TButton', foreground=[('active', accent), ('pressed', accent)])
-        style.map('MF.Secondary.TButton', foreground=[('active', accent), ('pressed', accent)])
-        style.configure('MF.Success.TButton', background='#22C55E', foreground='white')
-        style.map('MF.Success.TButton', background=[('active', '#16A34A'), ('pressed', '#15803D')])
-        style.configure('MF.Danger.TButton', background='#EF4444', foreground='white')
-        style.map('MF.Danger.TButton', background=[('active', '#DC2626'), ('pressed', '#B91C1C')])
-        style.configure('MF.Warning.TButton', background='#F59E0B', foreground='black')
-        style.map('MF.Warning.TButton', background=[('active', '#D97706'), ('pressed', '#B45309')])
-        style.configure('MF.Info.TButton', background='#38BDF8', foreground='white')
-        style.map('MF.Info.TButton', background=[('active', '#0EA5E9'), ('pressed', '#0284C7')])
-    except Exception:
-        pass
+    
     return styles
 
 def create_playback_controls(controller, parent_left, include_ensemble: bool = True, instrument: str | None = None):
@@ -606,7 +581,7 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
     # 顶部当前乐器提示（仅提示，不改变布局逻辑）
     try:
         if instrument:
-            banner = ttk.Label(ctrl_inner, text=f"当前乐器: {instrument}", foreground="#0A84FF")
+            banner = ttk.Label(ctrl_inner, text=f"当前乐器: {instrument}")
             banner.pack(side=tk.TOP, anchor=tk.W, padx=10, pady=(8, 0))
             # 将当前乐器注入控制器桥接，便于定时计划读取
             try:

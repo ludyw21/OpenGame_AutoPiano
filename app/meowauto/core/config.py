@@ -31,7 +31,7 @@ class ConfigManager:
                     cfg = json.load(f)
                 # 兼容注入 UI 默认项
                 ui_default = {
-                    "theme_name": "flatly",
+                    "theme_name": "pink",
                     "theme_mode": "light",
                     "density": "comfortable",
                     "scaling": "auto",
@@ -114,7 +114,7 @@ class ConfigManager:
                 "max_tries": 5,
             },
             "ui": {
-                "theme_name": "flatly",
+                "theme_name": "pink",
                 "theme_mode": "light",
                 "density": "comfortable",
                 "scaling": "auto",
