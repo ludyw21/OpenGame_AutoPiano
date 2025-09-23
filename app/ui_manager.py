@@ -57,20 +57,16 @@ class UIManager:
         self.accent_button_style = "Accent.TButton" if self.use_ttkbootstrap else "TButton"
         self.secondary_button_style = "Secondary.TButton" if self.use_ttkbootstrap else "TButton"
         
-        # 全局统一：Win11 蓝白风格（尽最大可能在原生 ttk 下生效）
+        # 设置全局统一的字体和基本样式，使用系统/主题默认颜色
         try:
-            accent = '#0A84FF'
-            # Treeview 行高与选中高亮
-            self.style.configure('Treeview', rowheight=28, font=("Segoe UI", 10), fieldbackground='white', background='white')
+            # Treeview 行高
+            self.style.configure('Treeview', rowheight=40, font=("Segoe UI", 10))
             self.style.configure('Treeview.Heading', font=("Segoe UI", 10, 'bold'))
-            self.style.map('Treeview', background=[('selected', '#E6F0FF')], foreground=[('selected', 'black')])
-            # Combobox 强调（选中/焦点）
+            # Combobox 箭头大小
             self.style.configure('TCombobox', arrowsize=16)
-            self.style.map('TCombobox', fieldbackground=[('focus', 'white')], foreground=[('focus', 'black')])
-            # Radiobutton/Checkbutton 字体统一
+            # 统一字体样式
             self.style.configure('TRadiobutton', font=("Segoe UI", 10))
             self.style.configure('TCheckbutton', font=("Segoe UI", 10))
-            # Label/Entry 基础字体
             self.style.configure('TLabel', font=("Segoe UI", 10))
             self.style.configure('TEntry', font=("Segoe UI", 10))
         except Exception:
@@ -123,7 +119,7 @@ class UIManager:
         self.main_container.rowconfigure(1, weight=1)
         # 配置页面容器为grid布局，支持左右两列
         self.page_container.columnconfigure(0, weight=1)  # 左侧内容列（自适应）
-        self.page_container.columnconfigure(1, weight=0, minsize=200)  # 右侧演奏列表列（固定200px）
+        self.page_container.columnconfigure(1, weight=0, minsize=300)  # 右侧演奏列表列（固定300px）
         self.page_container.rowconfigure(0, weight=1)
         
         # 创建主内容区域
@@ -139,7 +135,7 @@ class UIManager:
         # 使用 grid 将 sidebar 与内容分两列布置
         self.left_shell.grid_rowconfigure(0, weight=1)
         # 列0为侧边栏，使用 minsize 控制宽度以实现动画
-        self.left_shell.grid_columnconfigure(0, weight=0, minsize=200)
+        self.left_shell.grid_columnconfigure(0, weight=0, minsize=300)
         # 列1为内容区，填充扩展
         self.left_shell.grid_columnconfigure(1, weight=1)
         # 侧边栏容器（列0）
@@ -298,10 +294,10 @@ class UIManager:
             
             # 应用密度设置
             if density == "compact":
-                row_height = 24
+                row_height = 36
                 padding = 4
             else:
-                row_height = 28
+                row_height = 40
                 padding = 6
             
             # 更新样式
@@ -469,4 +465,4 @@ class UIManager:
         if self.event_bus:
             self.event_bus.publish('system.error', {'message': message}, 'UIManager')
         else:
-            print(f"[UIManager] {message}") 
+            print(f"[UIManager] {message}")

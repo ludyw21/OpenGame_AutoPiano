@@ -9,8 +9,8 @@ from tkinter import ttk
 def create_playlist_sidebar(controller, parent_right):
     """创建右侧演奏列表侧栏"""
     try:
-        # 创建侧栏容器（固定200px宽度）
-        sidebar = ttk.Frame(parent_right, width=200)
+        # 创建侧栏容器（固定300px宽度）
+        sidebar = ttk.Frame(parent_right, width=300)
         sidebar.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False)
         sidebar.pack_propagate(False)  # 保持固定宽度
         

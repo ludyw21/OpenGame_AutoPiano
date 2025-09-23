@@ -162,9 +162,9 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         evt_top = ttk.Frame(tab_events)
         evt_top.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         columns = ("#", "time", "type", "note", "channel", "group", "end", "dur", "chord")
-        tree = ttk.Treeview(evt_top, columns=columns, show='headings', height=12)
+        tree = ttk.Treeview(evt_top, columns=columns, show='headings', height=50)
         headers = ["序号","时间","事件","音符","通道","分组","结束","时长", ""]  # 隐藏和弦列标题
-        widths = [60, 100, 80, 80, 80, 80, 100, 100, 0]  # 和弦列宽度设为 0
+        widths =  [100,    110,  110,  100,   100,  150,  100,   100, 0]  # 和弦列宽度设为 0
         for i, col in enumerate(columns):
             tree.heading(col, text=headers[i])
             tree.column(col, width=widths[i], minwidth=0, stretch=False, anchor=tk.CENTER)
