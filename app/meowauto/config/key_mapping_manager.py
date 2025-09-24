@@ -3,9 +3,9 @@ import os
 from typing import Dict
 
 DEFAULT_MAPPING: Dict[str, str] = {
-    'L1': 'a', 'L2': 's', 'L3': 'd', 'L4': 'f', 'L5': 'g', 'L6': 'h', 'L7': 'j',
-    'M1': 'q', 'M2': 'w', 'M3': 'e', 'M4': 'r', 'M5': 't', 'M6': 'y', 'M7': 'u',
-    'H1': '1', 'H2': '2', 'H3': '3', 'H4': '4', 'H5': '5', 'H6': '6', 'H7': '7'
+    'L1': 'z', 'L2': 'x', 'L3': 'c', 'L4': 'v', 'L5': 'b', 'L6': 'n', 'L7': 'm',
+    'M1': 'a', 'L2': 's', 'L3': 'd', 'L4': 'f', 'L5': 'g', 'L6': 'h', 'L7': 'j',
+    'H1': 'q', 'M2': 'w', 'M3': 'e', 'M4': 'r', 'M5': 't', 'M6': 'y', 'M7': 'u',
 }
 
 class KeyMappingManager:

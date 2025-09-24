@@ -62,6 +62,39 @@ def _gather_notes(pm_data) -> List[Dict[str, Any]]:
     
     print(f"[DEBUG] 总共收集到 {len(events)} 个音符事件")
     
+    # 打印最高音和最低音符，并添加超限判定
+    max_note = 0
+    min_note = 127
+    max_group = "未知"
+    min_group = "未知"
+    max_status = "未超限"
+    min_status = "未超限"
+    above_83_count = 0
+    below_48_count = 0
+    
+    if events:
+        notes = [e['note'] for e in events]
+        max_note = max(notes)
+        min_note = min(notes)
+        max_group = group_for_note(max_note)
+        min_group = group_for_note(min_note)
+        
+        # 统计超限数量
+        above_83_count = len([note for note in notes if note > 83])
+        below_48_count = len([note for note in notes if note < 48])
+        
+        # 最高音超限判定
+        max_over_limit = max_note > 83
+        max_status = "已超限" if max_over_limit else "未超限"
+        
+        # 最低音超限判定
+        min_over_limit = min_note < 48
+        min_status = "已超限" if min_over_limit else "未超限"
+        
+        # 按照要求格式打印
+        print(f"[DEBUG] 最高音：{max_note}  {max_group}  {max_status} 超限数量 {above_83_count}")
+        print(f"[DEBUG] 最低音：{min_note} {min_group}  {min_status} 超限数量 {below_48_count}")
+    
     # 添加音符分组信息
     for e in events:
         e['group'] = group_for_note(e['note'])
@@ -74,7 +107,7 @@ def _gather_notes(pm_data) -> List[Dict[str, Any]]:
 
 def parse_midi(file_path: str) -> Dict[str, Any]:
     """解析MIDI文件，优先使用 pretty_midi；失败或结果异常时回退 miditoolkit。
-    返回统一结构：{'ok': bool, 'notes': list, 'channels': list, 'resolution': int|None, 'initial_tempo': float, 'end_time': float, 'total_notes': int, 'source': 'pretty_midi'|'miditoolkit'}
+    返回统一结构：{'ok': bool, 'notes': list, 'channels': list, 'resolution': int|None, 'initial_tempo': float, 'end_time': float, 'total_notes': int, 'source': 'pretty_midi'|'miditoolkit', 'max_note': int, 'min_note': int, 'max_group': str, 'min_group': str, 'max_status': str, 'min_status': str, 'above_83_count': int, 'below_48_count': int}
     """
     # 根据 DEFAULT_ENGINE 决定优先顺序
     engine = DEFAULT_ENGINE
@@ -152,6 +185,35 @@ def parse_midi(file_path: str) -> Dict[str, Any]:
                 except Exception:
                     pass
                 channels = sorted({n['channel'] for n in notes}) if notes else []
+                # 计算最高音和最低音信息
+                max_note = 0
+                min_note = 127
+                max_group = "未知"
+                min_group = "未知"
+                max_status = "未超限"
+                min_status = "未超限"
+                above_83_count = 0
+                below_48_count = 0
+                
+                if notes:
+                    note_values = [n['note'] for n in notes]
+                    max_note = max(note_values)
+                    min_note = min(note_values)
+                    max_group = group_for_note(max_note)
+                    min_group = group_for_note(min_note)
+                    
+                    # 统计超限数量
+                    above_83_count = len([note for note in note_values if note > 83])
+                    below_48_count = len([note for note in note_values if note < 48])
+                    
+                    # 最高音超限判定
+                    max_over_limit = max_note > 83
+                    max_status = "已超限" if max_over_limit else "未超限"
+                    
+                    # 最低音超限判定
+                    min_over_limit = min_note < 48
+                    min_status = "已超限" if min_over_limit else "未超限"
+                
                 out = {
                     'ok': True,
                     'notes': notes,
@@ -161,6 +223,14 @@ def parse_midi(file_path: str) -> Dict[str, Any]:
                     'end_time': end_time if end_time > 0 else (notes[-1]['end_time'] if notes else 0.0),
                     'total_notes': len(notes),
                     'source': 'miditoolkit',
+                    'max_note': max_note,
+                    'min_note': min_note,
+                    'max_group': max_group,
+                    'min_group': min_group,
+                    'max_status': max_status,
+                    'min_status': min_status,
+                    'above_83_count': above_83_count,
+                    'below_48_count': below_48_count,
                 }
                 try:
                     print(f"[DEBUG] 解析完成: source=miditoolkit, total_notes={out['total_notes']}, end_time={out['end_time']:.3f}s")

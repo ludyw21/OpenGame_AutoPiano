@@ -7167,6 +7167,73 @@ class MeowFieldAutoPiano:
             
             info_text = f"已选择: {file_name} ({file_type}, {file_size_str})"
             
+            # 对于MIDI文件，添加音高信息
+            if file_ext in ['.mid', '.midi']:
+                try:
+                    from meowauto.midi import analyzer
+                    # 解析MIDI获取音高信息
+                    res = analyzer.parse_midi(file_path)
+                    if res.get('ok'):
+                        # 检查返回结果中是否包含音高信息
+                        if 'max_note' in res and 'min_note' in res:
+                            # 如果结果中已有音高信息，直接使用
+                            max_note = res.get('max_note', 0)
+                            min_note = res.get('min_note', 127)
+                            max_group = res.get('max_group', '未知')
+                            min_group = res.get('min_group', '未知')
+                            max_status = res.get('max_status', '未超限')
+                            min_status = res.get('min_status', '未超限')
+                            above_83_count = res.get('above_83_count', 0)
+                            below_48_count = res.get('below_48_count', 0)
+                        else:
+                            # 如果结果中没有音高信息，手动计算
+                            notes = res.get('notes', [])
+                            if notes:
+                                note_values = [n.get('note', 0) for n in notes if 'note' in n]
+                                if note_values:
+                                    max_note = max(note_values)
+                                    min_note = min(note_values)
+                                    # 简单的音组判断
+                                    if max_note > 83:
+                                        max_group = "小字三组及以上"
+                                        max_status = "已超限"
+                                    elif max_note > 71:
+                                        max_group = "小字二组"
+                                        max_status = "未超限"
+                                    else:
+                                        max_group = "小字一组及以下"
+                                        max_status = "未超限"
+                                    
+                                    if min_note < 48:
+                                        min_group = "小字组以下"
+                                        min_status = "已超限"
+                                    elif min_note < 60:
+                                        min_group = "小字组"
+                                        min_status = "未超限"
+                                    else:
+                                        min_group = "小字一组及以上"
+                                        min_status = "未超限"
+                                    
+                                    above_83_count = len([note for note in note_values if note > 83])
+                                    below_48_count = len([note for note in note_values if note < 48])
+                                else:
+                                    max_note, min_note = 0, 127
+                                    max_group, min_group = "未知", "未知"
+                                    max_status, min_status = "未超限", "未超限"
+                                    above_83_count, below_48_count = 0, 0
+                            else:
+                                max_note, min_note = 0, 127
+                                max_group, min_group = "未知", "未知"
+                                max_status, min_status = "未超限", "未超限"
+                                above_83_count, below_48_count = 0, 0
+                        
+                        # 添加音高信息到显示文本
+                        info_text += f"\n最高音：{max_note}  {max_group}  {max_status} 超限数量 {above_83_count}"
+                        info_text += f"\n最低音：{min_note} {min_group}  {min_status} 超限数量 {below_48_count}"
+                except Exception as e:
+                    # 如果解析失败，不影响基本信息显示
+                    self._log_message(f"获取音高信息失败: {e}", "DEBUG")
+            
             if hasattr(self, 'file_info_var'):
                 self.file_info_var.set(info_text)
                 
