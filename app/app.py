@@ -115,6 +115,7 @@ from meowauto.utils.exporters.event_csv import export_event_csv
 from meowauto.app.services.playback_service import PlaybackService
 
 from meowauto.app.controllers.playback_controller import PlaybackController
+from meowauto.app.controllers.preview_controller import get_preview_controller
 
 try:
 
@@ -497,14 +498,16 @@ class MeowFieldAutoPiano:
                 self.playback_service = None
 
         # 控制器占位：协调 UI 与播放服务
-
         try:
-
             self.playback_controller = PlaybackController(self, self.playback_service)
-
         except Exception:
-
             self.playback_controller = None
+        
+        # 预览控制器：用于试听功能
+        try:
+            self.preview_controller = get_preview_controller(self)
+        except Exception:
+            self.preview_controller = None
 
         # 分部缓存：保存最近一次分离结果，供导出与预听使用
 
@@ -6251,6 +6254,26 @@ class MeowFieldAutoPiano:
             self._log_message(f"停止播放失败: {str(e)}", "ERROR")
 
 
+
+    def _preview_midi(self):
+        """试听MIDI文件（通过预览控制器）"""
+        try:
+            midi_path = self.midi_path_var.get() if hasattr(self, 'midi_path_var') else ''
+            
+            if not midi_path:
+                messagebox.showerror("错误", "请先选择MIDI文件")
+                return
+            
+            if not os.path.exists(midi_path):
+                messagebox.showerror("错误", "MIDI文件不存在")
+                return
+            
+            # 使用预览控制器进行试听
+            if getattr(self, 'preview_controller', None):
+                self.preview_controller.toggle_preview()
+        except Exception as e:
+            self._log_message(f"MIDI试听异常: {e}", "ERROR")
+            messagebox.showerror("错误", f"MIDI试听过程中发生错误:\n{e}")
 
     def _play_midi(self):
 

@@ -4,6 +4,49 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 import os
+from typing import Optional
+from meowauto.app.services.preview_service import get_preview_service
+from meowauto.core import Logger
+
+
+def initialize_epiano_preview(app=None) -> Optional[dict]:
+    """
+    初始化电子琴处理试听功能
+    
+    参数:
+        app: 主应用实例
+        
+    返回:
+        dict: 初始化状态信息，包含success标志和可能的message
+    """
+    try:
+        # 获取PreviewService实例
+        logger = getattr(app, 'logger', None) or Logger()
+        preview_service = get_preview_service(logger)
+        
+        # 初始化MIDI处理器
+        preview_service.init_processor()
+        
+        # 配置分析设置（可根据需要调整）
+        preview_service.configure_analysis_settings(
+            auto_transpose=True,
+            min_note_duration_ms=25
+        )
+        
+        logger.info("电子琴处理试听功能初始化成功")
+        
+        return {
+            'success': True,
+            'message': '电子琴处理试听功能初始化成功',
+            'preview_service': preview_service
+        }
+    except Exception as e:
+        error_msg = f"电子琴处理试听功能初始化失败: {str(e)}"
+        logger.error(error_msg) if logger else print(error_msg)
+        return {
+            'success': False,
+            'message': error_msg
+        }
 try:
     # 嵌入右侧解析面板至左侧分页
     from pages.components.right_pane import create_right_pane as create_right_pane_component  # type: ignore
@@ -736,6 +779,18 @@ def create_playback_controls(controller, parent_left, include_ensemble: bool = T
         midi_buttons_row = ttk.Frame(control_center)
         midi_buttons_row.pack(side=tk.TOP, pady=(8, 8))
         
+        # 试听按钮
+        def _toggle_preview():
+            try:
+                controller._preview_midi()
+            except Exception as e:
+                controller._log_message(f"切换MIDI试听状态失败: {e}", "ERROR")
+        
+        controller.preview_button = ttk.Button(midi_buttons_row, text="播放MIDI预览", style=styles['info'], 
+                                               command=_toggle_preview, width=12)
+        controller.preview_button.pack(side=tk.LEFT, padx=(0, 6))
+        
+        # 主播放按钮
         def _toggle_midi_playback():
             try:
                 if hasattr(controller, 'midi_play_button'):

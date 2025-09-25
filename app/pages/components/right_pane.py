@@ -108,7 +108,7 @@ def create_right_pane_component(controller, parent_right, *, show_midi_parse: bo
         play_frame = ttk.LabelFrame(settings_inner, text="回放 · 和弦伴奏", padding="8")
         play_frame.pack(fill=tk.X, padx=6, pady=6)
         # 和弦伴奏
-        controller.enable_chord_accomp_var = tk.BooleanVar(value=True)
+        controller.enable_chord_accomp_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(play_frame, text="启用和弦伴奏", variable=controller.enable_chord_accomp_var).grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
         ttk.Label(play_frame, text="和弦最短持续(ms):").grid(row=1, column=1, sticky=tk.E, padx=(12,4))
         controller.chord_min_sustain_ms_var = tk.IntVar(value=120)

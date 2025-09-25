@@ -167,6 +167,17 @@ def main():
         print("✓ 应用程序实例创建成功")
         print("正在启动主循环...")
         
+        # 初始化电子琴处理试听功能
+        try:
+            from pages.components.playback_controls import initialize_epiano_preview
+            result = initialize_epiano_preview(app)
+            if result and result.get('success'):
+                print("✓ 电子琴处理试听功能已初始化")
+            else:
+                print(f"⚠ 电子琴处理试听功能初始化失败: {result.get('message', '未知错误')}")
+        except Exception as e:
+            print(f"⚠ 电子琴处理试听功能初始化失败: {e}")
+            
         # 运行主循环
         app.run()
         
@@ -194,4 +205,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ 启动脚本发生未知错误: {e}")
         traceback.print_exc()
-        input("按回车键退出...") 
+        input("按回车键退出...")
